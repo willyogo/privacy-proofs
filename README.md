@@ -4,16 +4,16 @@
 
 You can paste raw JSON or upload a report file, and the app will:
 
-- parse and normalize the report
-- surface structural problems early
-- run deterministic local consistency checks
+- parse and normalize the report with explicit schemas
+- validate local bindings, certificate chains, and Intel TDX quote signatures in the browser
+- optionally accept a collateral bundle for follow-on validation inputs
 - show a verdict of `Verified`, `Partially verified`, or `Verification failed`
 
 ## Purpose
 
-This repo exists to make Venice attestation reports easier to inspect without sending the report to a backend service. The current implementation is focused on browser-side validation of report structure and internal bindings rather than full end-to-end cryptographic attestation verification.
+This repo exists to make Venice attestation reports easier to inspect without sending the report to a backend service. The current build performs real local validation for report structure, internal bindings, certificate chains, and the Intel TDX quote signature path.
 
-Today, the app is best understood as a transparent verifier UI plus a deterministic local checking engine.
+Today, the app is best understood as a transparent verifier UI with an independent local verification engine that still keeps unsupported evidence paths in a partial state instead of over-claiming verification.
 
 ## How It Works
 
@@ -21,50 +21,57 @@ The app is a Vite + React + TypeScript single-page application.
 
 ### Runtime flow
 
-1. The user pastes JSON into the textarea or uploads a file.
-2. `src/app.tsx` passes the raw input to `parseReportSource(...)` in `src/lib/normalize.ts`.
-3. The parser:
-   - validates that the input is JSON
-   - checks that the top level is an object
-   - checks for required top-level fields
+1. The user pastes JSON into the textarea or uploads a report file.
+2. The user can optionally paste or upload a collateral bundle JSON file.
+3. The user clicks `Verify report`.
+4. `src/app.tsx` passes the raw inputs to `parseReportSource(...)` in `src/lib/normalize.ts`.
+5. The parser:
+   - validates that the report and optional collateral bundle are JSON
+   - validates the report against explicit `zod` schemas
    - normalizes `nvidia_payload` when it arrives as a JSON string
-   - records basic shape checks for `event_log` and `info`
-4. The normalized report is passed to `verifyNormalizedReport(...)` in `src/lib/verifier.ts`.
-5. The verifier runs deterministic local checks, including:
+   - records precise schema-path failures when parsing fails
+6. `parseReportSource(...)` lazy-loads `verifyNormalizedReport(...)` from `src/lib/verifier.ts`.
+7. The verifier runs local checks, including:
    - signing public key -> Ethereum address derivation
    - equality checks across duplicated signing key fields
    - nonce consistency between top-level and nested payloads
-   - Intel TDX quote decoding
+   - app certificate chain validation against a pinned root fingerprint
+   - Intel PCK certificate chain validation against a pinned root fingerprint
+   - Intel quote signature validation against the embedded attestation key
+   - QE report signature validation against the Intel PCK leaf certificate
+   - QE report-data binding between the attestation key and QE auth data
    - report-data binding between signing address and nonce
    - TDX measurement checks (`MRTD`, `RTMR0-3`, `MRCONFIGID`)
    - event log consistency checks against the `info` / `tcb_info` block
    - key-provider metadata consistency checks
-   - inspection of embedded `server_verification` claims when present
-6. `buildVerificationSummary(...)` classifies the result:
-   - `Verified`: supported local checks passed and embedded TDX/NVIDIA verification claims passed
-   - `Partially verified`: local checks passed, but embedded cryptographic verification claims were missing or incomplete
-   - `Verification failed`: one or more supported checks failed
-7. React components render:
+   - NVIDIA certificate-chain validation against a pinned root fingerprint
+   - advisory inspection of embedded `server_verification` claims
+   - advisory tracking of fetched revocation collateral when available
+8. `buildVerificationSummary(...)` classifies the result:
+   - `Verified`: all blocking local checks passed and the app independently completed all supported cryptographic verification
+   - `Partially verified`: all blocking local checks passed, but unsupported or missing evidence/collateral still prevents a full proof
+   - `Verification failed`: one or more blocking local checks failed
+9. React components render:
    - a verdict summary card
    - a decoded metadata panel
-   - a checklist of individual checks and their JSON paths
+   - a checklist of individual checks including source, domain, and severity
 
 ## Current Scope and Limits
 
-This repository does **not** yet perform the full cryptographic evidence verification implied by production attestation systems.
+This repository now performs a materially stronger local verification pass than the original implementation, but it still does **not** complete every evidence path required for unconditional production-grade attestation proof.
 
 According to `IMPLEMENTATION_PLAN.md`, these areas are still pending:
 
-- certificate validation against pinned trust anchors
-- full NVIDIA evidence verification
-- full Intel TDX quote verification
+- full NVIDIA raw-evidence signature verification
+- full Intel QE identity / TCB collateral validation
+- a repo-local golden attestation fixture that exercises the full real-world quote path end-to-end
 
 That means a positive result in this app should currently be read as:
 
-- local bindings and consistency checks passed, and
-- the report may include embedded claims saying server-side verification succeeded
+- blocking local bindings, schema checks, and supported certificate/signature checks passed, and
+- unsupported evidence paths remained partial instead of being silently treated as verified
 
-It should not be read as proof that this repo independently re-derived every cryptographic guarantee from raw evidence.
+It should not be read as proof that this repo independently re-derived every cryptographic guarantee from raw Intel and NVIDIA evidence yet.
 
 ## Repo Layout
 
@@ -72,10 +79,11 @@ It should not be read as proof that this repo independently re-derived every cry
 public/                 Static Venice assets
 src/app.tsx             Main application shell
 src/components/         UI panels for input, verdicts, metadata, and checks
-src/lib/normalize.ts    Parsing, normalization, summary building, verdict logic
-src/lib/verifier.ts     Deterministic verification checks and TDX decoding
-src/lib/schema.ts       Required-field and record helpers
-tests/normalize.test.ts Parser and verification regression tests
+src/lib/normalize.ts    Async parse + verify entrypoint and verdict builder
+src/lib/verifier.ts     Local certificate, quote, and consistency checks
+src/lib/schema.ts       Typed zod schemas and normalization helpers
+src/lib/certificates.ts X.509 chain and revocation helpers
+tests/                  Parser, verdict, and UI regression tests
 ```
 
 ## Run It Locally
@@ -107,9 +115,9 @@ npm test
 
 Notes:
 
-- The test suite includes basic parser tests that run everywhere.
-- Two tests use a hard-coded sample report path in `tests/normalize.test.ts`.
-- If that sample file is not present on your machine, those sample-based tests exit early instead of failing.
+- The test suite is repo-local and does not depend on a machine-specific report path.
+- Current tests focus on schema failures, verdict construction, unsupported quote versions, and the explicit verify UI flow.
+- A committed golden fixture for the full real-world attestation path is still pending.
 
 ### Build for production
 
@@ -128,9 +136,37 @@ npm run preview
 1. Start the dev server.
 2. Open the local Vite URL in your browser.
 3. Paste a Venice attestation report into the textarea, or upload a JSON file.
-4. Review the verdict card, decoded metadata, and per-check diagnostics.
+4. Optionally paste or upload a collateral bundle JSON file.
+5. Click `Verify report`.
+6. Review the verdict card, decoded metadata, and per-check diagnostics.
 
 No backend or environment-variable setup is required for the current app.
+
+## Collateral Bundle Shape
+
+The optional collateral bundle currently accepts a JSON object with these top-level keys:
+
+```json
+{
+  "intel": {
+    "pckCrl": "-----BEGIN X509 CRL-----...",
+    "qeIdentity": {},
+    "tcbInfo": {}
+  },
+  "nvidia": {
+    "crls": ["-----BEGIN X509 CRL-----..."],
+    "certBundle": "-----BEGIN CERTIFICATE-----..."
+  }
+}
+```
+
+Only `intel.pckCrl` and `nvidia.crls` are actively consumed by the current build. Other fields are accepted so the interface is stable as the remaining collateral validation work lands.
+
+## Deployment Notes
+
+- The app is still a static frontend with no backend verifier.
+- The production build code-splits the heavy verifier path so the landing bundle stays smaller and the crypto/X.509 stack loads on demand.
+- Static hosts should set a CSP and other security headers at the edge. This repo does not yet ship host-specific config for Vercel, Netlify, or Cloudflare Pages.
 
 ## Audit Prompt for an Agentic Coding Tool
 
@@ -143,7 +179,7 @@ Repository context:
 - This is a frontend-only Venice attestation verifier built with Vite, React, and TypeScript.
 - The main logic lives in src/lib/normalize.ts and src/lib/verifier.ts.
 - The app parses pasted/uploaded JSON attestation reports, normalizes them, runs deterministic local checks, and renders a verdict in the browser.
-- Current implementation intentionally does not yet do full certificate-chain validation or full raw-evidence cryptographic verification; review whether the UI and code make that scope clear enough and whether any checks overclaim what they prove.
+- Current implementation performs local schema, binding, certificate, and Intel quote signature checks, but it still does not complete full NVIDIA raw-evidence verification or full Intel collateral validation; review whether the UI and code make that scope clear enough and whether any checks overclaim what they prove.
 
 Your objectives:
 - Find bugs, security risks, misleading verification behavior, and incorrect assumptions.
@@ -151,7 +187,7 @@ Your objectives:
 - Review parsing, normalization, hex/address handling, quote decoding offsets, event-log comparisons, embedded server_verification trust assumptions, and verdict construction.
 - Check whether malformed or adversarial JSON inputs can produce incorrect passes, silent skips, confusing partial-verification states, or unsafe rendering behavior.
 - Check whether tests are missing for important negative cases and edge cases.
-- Call out places where the code relies on embedded verification claims instead of independently verifying evidence.
+- Call out places where the code still treats unsupported evidence paths as partial rather than fully verified.
 
 Expected output format:
 1. Findings first, ordered by severity.
@@ -170,4 +206,5 @@ Important review lens:
 - The app is intentionally frontend only.
 - The verification engine is implemented with plain TypeScript functions, which makes it straightforward to test independently of the React UI.
 - `viem` is used for Ethereum-style hex/address utilities and hashing needed for signing-address derivation.
+- `@peculiar/x509` is used for local certificate parsing, chain building, and CRL parsing.
 - The UI is a thin layer over the parser/verifier pipeline, so most correctness work should focus on `src/lib`.

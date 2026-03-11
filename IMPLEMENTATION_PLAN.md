@@ -23,11 +23,11 @@ Build a simple, open source, frontend-only app where users can paste or upload a
 | Milestone | Status | Notes |
 | --- | --- | --- |
 | 1. App shell and UX scaffold | Completed | Built the one-page app, input flow, diagnostics panels, and Venice-inspired visual system. Verified with `npm test` and `npm run build` on March 11, 2026. |
-| 2. Input normalization and schema validation | Completed | Added nested payload normalization, structural error handling, and browser-side verdict generation. |
-| 3. Deterministic local checks | Completed | Added nonce, public key, address, quote report-data, quote measurement, event-log, and embedded-claim consistency checks. |
-| 4. Certificate validation | Pending | Parse cert chains and validate against pinned trust anchors. |
-| 5. Full evidence verification | Pending | Verify NVIDIA evidence and Intel TDX quote locally. |
-| 6. Polish, docs, and release prep | Pending | Explain failures clearly, add docs, and harden the UX. |
+| 2. Input normalization and schema validation | Completed | Replaced the loose record parser with typed `zod` normalization and explicit schema-path failures. |
+| 3. Deterministic local checks | Completed | Added nonce, public key, address, quote report-data, quote measurement, event-log, and key-provider consistency checks. |
+| 4. Certificate validation | Completed | Added app, Intel PCK, and NVIDIA certificate-chain validation against pinned root fingerprints plus CRL parsing/fetch support. |
+| 5. Full evidence verification | In progress | Intel quote signature verification and QE report-data binding are local now; NVIDIA raw-evidence verification and Intel collateral validation are still pending. |
+| 6. Polish, docs, and release prep | In progress | Switched to explicit verify actions, added optional collateral input, code-split the verifier, added CI, and refreshed the docs. |
 
 ## Repo Layout Target
 
@@ -62,4 +62,7 @@ Build a simple, open source, frontend-only app where users can paste or upload a
 - Verified the milestone with `npm test` and `npm run build`
 - Promoted the placeholder card into an active verification engine with explicit verdicts
 - Added browser-side checks for signing key/address binding, nonce binding, TDX quote report data, TDX measurements, event-log consistency, and embedded TDX or NVIDIA verification claims
-- Added sample-report coverage to prove the provided attestation verifies and a tampered nonce fails
+- Replaced parse-on-every-keystroke with an explicit verify flow and optional collateral bundle upload
+- Added typed normalization, pinned certificate-chain validation, and local Intel quote signature validation
+- Reworked the verdict so embedded claims are advisory only and unsupported crypto paths remain partial
+- Added repo-local parser, verdict, and UI regression tests plus a GitHub Actions CI workflow

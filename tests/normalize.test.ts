@@ -1,70 +1,160 @@
-import { existsSync, readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { parseReportSource } from "../src/lib/normalize";
 
-const SAMPLE_REPORT_PATH =
-  "/Users/willy/Downloads/attestation-e2ee-deepseek-v3-1-1773243769002.json";
+const BASE_SIGNING_PUBLIC_KEY =
+  "049eb9f800a6d38ac3c30526d812ba9aa49fc0e5f14d7f67ae17e56aa4d9a43f1c274540b74dab8405b5fef5dfbe3431bf5ad7efcf7279008b460c4930bb8f6606";
+const BASE_SIGNING_ADDRESS = "0x4B19f7f8Fd7757AAb29a8990bb11f6aA3572C9B1";
+const BASE_NONCE =
+  "d8786ff291199a0c41654bd828a67c996331a74b457b7d6831e8cef938222be3";
+const KEY_PROVIDER_INFO = JSON.stringify({
+  id: "kms-key",
+  name: "kms",
+});
+const KEY_PROVIDER_INFO_HEX = Array.from(new TextEncoder().encode(KEY_PROVIDER_INFO))
+  .map((byte) => byte.toString(16).padStart(2, "0"))
+  .join("");
 
 describe("parseReportSource", () => {
-  it("returns an error for invalid JSON", () => {
-    const result = parseReportSource("{broken");
+  it("returns an error for invalid JSON", async () => {
+    const result = await parseReportSource("{broken");
 
     expect(result.state).toBe("error");
     expect(result.checks[0]?.status).toBe("fail");
     expect(result.verification.status).toBe("invalid");
   });
 
-  it("flags missing required fields", () => {
-    const result = parseReportSource(
+  it("flags schema failures for missing required fields", async () => {
+    const result = await parseReportSource(
       JSON.stringify({
         info: {},
       }),
     );
 
     expect(result.state).toBe("error");
-    expect(
-      result.checks.find((check) => check.id === "required-fields")?.status,
-    ).toBe("fail");
+    expect(result.checks.some((check) => check.id.startsWith("schema-"))).toBe(true);
   });
 
-  it("verifies the provided sample report", () => {
-    if (!existsSync(SAMPLE_REPORT_PATH)) {
-      return;
-    }
+  it("fails verification for compressed signing public keys", async () => {
+    const report = buildBaseReport({
+      signing_public_key: `02${"11".repeat(32)}`,
+      signing_key: `02${"11".repeat(32)}`,
+    });
 
-    const result = parseReportSource(
-      readFileSync(SAMPLE_REPORT_PATH, "utf8"),
-      "sample.json",
-    );
-
-    expect(result.verification.status).toBe("verified");
-    expect(result.summary?.derivedSigningAddress).toBe(
-      "0x4B19f7f8Fd7757AAb29a8990bb11f6aA3572C9B1",
-    );
-    expect(result.summary?.quoteReportData).toContain(
-      "4b19f7f8fd7757aab29a8990bb11f6aa3572c9b1",
-    );
-    expect(result.checks.some((check) => check.status === "fail")).toBe(false);
-  });
-
-  it("fails verification when the nonce is tampered", () => {
-    if (!existsSync(SAMPLE_REPORT_PATH)) {
-      return;
-    }
-
-    const report = JSON.parse(readFileSync(SAMPLE_REPORT_PATH, "utf8")) as Record<
-      string,
-      unknown
-    >;
-    report.nonce =
-      "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-
-    const result = parseReportSource(JSON.stringify(report), "tampered.json");
+    const result = await parseReportSource(JSON.stringify(report), "compressed.json");
 
     expect(result.verification.status).toBe("invalid");
     expect(
-      result.checks.find((check) => check.id === "request-nonce-consistency")
-        ?.status,
+      result.checks.find((check) => check.id === "signing-address-binding")?.status,
+    ).toBe("fail");
+  });
+
+  it("treats unsupported TDX quote versions as blocking failures", async () => {
+    const report = buildBaseReport({
+      intel_quote: buildQuoteHex({ version: 5 }),
+    });
+
+    const result = await parseReportSource(JSON.stringify(report), "unsupported.json");
+
+    expect(result.verification.status).toBe("invalid");
+    expect(
+      result.checks.find((check) => check.id === "tdx-quote-shape")?.status,
     ).toBe("fail");
   });
 });
+
+function buildBaseReport(overrides: Record<string, unknown> = {}) {
+  const eventLog = [
+    {
+      digest: "aa",
+      event: "app-id",
+      event_payload: "2c0a0c96cb6dbd659bf1446e2f3fce58172ff91b",
+      event_type: 134217729,
+      imr: 3,
+    },
+    {
+      digest: "bb",
+      event: "compose-hash",
+      event_payload: "39eaa3f466bb30f10e9d2be1b103b2d97d452f4d3dd15fcc9c6fb1f1023bfdba",
+      event_type: 134217729,
+      imr: 3,
+    },
+    {
+      digest: "cc",
+      event: "instance-id",
+      event_payload: "d91376e26c0be974730f66ca0cc9dadb2f0e3a85",
+      event_type: 134217729,
+      imr: 3,
+    },
+    {
+      digest: "dd",
+      event: "os-image-hash",
+      event_payload: "9b69bb1698bacbb6985409a2c272bcb892e09cdcea63d5399c6768b67d3ff677",
+      event_type: 134217729,
+      imr: 3,
+    },
+    {
+      digest: "ee",
+      event: "key-provider",
+      event_payload: KEY_PROVIDER_INFO_HEX,
+      event_type: 134217729,
+      imr: 3,
+    },
+  ];
+
+  return {
+    event_log: eventLog,
+    info: {
+      app_cert: "",
+      app_id: "2c0a0c96cb6dbd659bf1446e2f3fce58172ff91b",
+      app_name: "fixture",
+      compose_hash: "39eaa3f466bb30f10e9d2be1b103b2d97d452f4d3dd15fcc9c6fb1f1023bfdba",
+      instance_id: "d91376e26c0be974730f66ca0cc9dadb2f0e3a85",
+      key_provider_info: KEY_PROVIDER_INFO,
+      tcb_info: {
+        event_log: eventLog,
+        mrtd: "00".repeat(48),
+        os_image_hash: "9b69bb1698bacbb6985409a2c272bcb892e09cdcea63d5399c6768b67d3ff677",
+        rtmr0: "00".repeat(48),
+        rtmr1: "00".repeat(48),
+        rtmr2: "00".repeat(48),
+        rtmr3: "00".repeat(48),
+      },
+    },
+    intel_quote: buildQuoteHex({ version: 4 }),
+    nvidia_payload: JSON.stringify({
+      arch: "HOPPER",
+      evidence_list: [
+        {
+          arch: "HOPPER",
+          certificate: btoa("-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----"),
+          evidence: btoa("fixture-evidence"),
+        },
+      ],
+      nonce: BASE_NONCE,
+    }),
+    nonce: BASE_NONCE,
+    request_nonce: BASE_NONCE,
+    server_verification: {
+      nvidia: { valid: true },
+      tdx: { valid: true },
+      verifiedAt: "2026-03-11T15:42:20.617Z",
+    },
+    signing_address: BASE_SIGNING_ADDRESS,
+    signing_key: BASE_SIGNING_PUBLIC_KEY,
+    signing_public_key: BASE_SIGNING_PUBLIC_KEY,
+    tee_hardware: "intel-tdx",
+    tee_provider: "near-ai",
+    verified: true,
+    ...overrides,
+  };
+}
+
+function buildQuoteHex({ version }: { version: number }) {
+  const quote = new Uint8Array(636);
+  const view = new DataView(quote.buffer);
+  view.setUint16(0, version, true);
+  view.setUint32(632, 0, true);
+  return Array.from(quote)
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("");
+}

@@ -1,12 +1,14 @@
 import type { CheckResult } from "./check-result";
-import { REQUIRED_TOP_LEVEL_FIELDS, isRecord } from "./schema";
+import {
+  parseAttestationReport,
+  parseCollateralBundle,
+} from "./schema";
 import type {
+  CollateralBundle,
   ParseResult,
-  RawAttestationReport,
   ReportSummary,
   VerificationSummary,
 } from "./types";
-import { verifyNormalizedReport } from "./verifier";
 
 export function createIdleParseResult(): ParseResult {
   return {
@@ -14,12 +16,15 @@ export function createIdleParseResult(): ParseResult {
     checks: [],
     verification: {
       badge: "Awaiting input",
+      collateralStatus: "not-requested",
+      cryptographicStatus: "unsupported",
       description:
-        "Paste or upload an attestation report to run the browser-side verifier.",
+        "Paste or upload an attestation report, then run the browser-side verifier.",
       engineLabel: "Engine ready",
       failedChecks: 0,
       headline: "Ready to verify",
       infoChecks: 0,
+      mode: "offline",
       passedChecks: 0,
       status: "idle",
       supportedChecks: 0,
@@ -27,10 +32,12 @@ export function createIdleParseResult(): ParseResult {
   };
 }
 
-export function parseReportSource(
+export async function parseReportSource(
   source: string,
   fileName?: string,
-): ParseResult {
+  collateralSource?: string,
+  collateralFileName?: string,
+): Promise<ParseResult> {
   if (source.trim().length === 0) {
     return createIdleParseResult();
   }
@@ -40,144 +47,159 @@ export function parseReportSource(
   try {
     parsed = JSON.parse(source);
   } catch (error) {
-    return {
-      state: "error",
+    return buildImmediateErrorResult({
+      checks: [
+        buildCheck({
+          description: "The provided input could not be parsed as JSON.",
+          domain: "input",
+          id: "json-parse",
+          jsonPath: "$",
+          label: "Parse JSON",
+          severity: "blocking",
+          source: "local",
+          status: "fail",
+        }),
+      ],
       errorMessage:
         error instanceof Error ? error.message : "The report is not valid JSON.",
-      checks: [
-        {
-          id: "json-parse",
-          label: "Parse JSON",
-          status: "fail",
-          description: "The provided input could not be parsed as JSON.",
-          jsonPath: "$",
-        },
-      ],
-      verification: buildVerificationSummary({
-        checks: [
-          {
-            id: "json-parse",
-            label: "Parse JSON",
-            status: "fail",
-            description: "The provided input could not be parsed as JSON.",
-            jsonPath: "$",
-          },
-        ],
-      }),
-    };
+    });
   }
 
-  if (!isRecord(parsed)) {
-    return {
-      state: "error",
-      errorMessage: "The report must be a JSON object at the top level.",
-      checks: [
-        {
-          id: "top-level-object",
-          label: "Validate top-level object",
-          status: "fail",
-          description: "A Venice attestation report should decode to a JSON object.",
+  const collateralChecks: CheckResult[] = [];
+  let collateralBundle: CollateralBundle | undefined;
+
+  if (collateralSource?.trim()) {
+    let parsedCollateral: unknown;
+
+    try {
+      parsedCollateral = JSON.parse(collateralSource);
+    } catch (error) {
+      collateralChecks.push(
+        buildCheck({
+          description:
+            error instanceof Error
+              ? `The optional collateral bundle is not valid JSON: ${error.message}`
+              : "The optional collateral bundle is not valid JSON.",
+          domain: "collateral",
+          id: "collateral-json-parse",
           jsonPath: "$",
-        },
-      ],
-      verification: buildVerificationSummary({
-        checks: [
-          {
-            id: "top-level-object",
-            label: "Validate top-level object",
-            status: "fail",
-            description: "A Venice attestation report should decode to a JSON object.",
-            jsonPath: "$",
-          },
-        ],
-      }),
-    };
-  }
-
-  const report = { ...parsed } as RawAttestationReport;
-  const checks: CheckResult[] = [
-    {
-      id: "json-parse",
-      label: "Parse JSON",
-      status: "pass",
-      description: "The report decoded into a top-level JSON object.",
-      jsonPath: "$",
-    },
-  ];
-
-  const missingFields = REQUIRED_TOP_LEVEL_FIELDS.filter(
-    (field) => !(field in report),
-  );
-
-  checks.push({
-    id: "required-fields",
-    label: "Check required fields",
-    status: missingFields.length === 0 ? "pass" : "fail",
-    description:
-      missingFields.length === 0
-        ? "All Milestone 1 required fields are present."
-        : `Missing required fields: ${missingFields.join(", ")}.`,
-    jsonPath: "$",
-  });
-
-  const normalizedNvidiaPayload = normalizeNvidiaPayload(report.nvidia_payload);
-
-  if (normalizedNvidiaPayload.ok) {
-    if (normalizedNvidiaPayload.value) {
-      report.nvidia_payload = normalizedNvidiaPayload.value;
+          label: "Parse collateral bundle",
+          severity: "advisory",
+          source: "local",
+          status: "fail",
+        }),
+      );
     }
 
-    checks.push({
-      id: "nvidia-payload",
-      label: "Decode NVIDIA payload",
-      status: "pass",
-      description: "The NVIDIA payload is available as structured JSON.",
-      jsonPath: "$.nvidia_payload",
-    });
-  } else {
-    checks.push({
-      id: "nvidia-payload",
-      label: "Decode NVIDIA payload",
-      status: "fail",
-      description: normalizedNvidiaPayload.error,
-      jsonPath: "$.nvidia_payload",
+    if (parsedCollateral !== undefined) {
+      const parsedBundle = parseCollateralBundle(parsedCollateral);
+      if (parsedBundle.ok) {
+        collateralBundle = parsedBundle.value;
+        collateralChecks.push(
+          buildCheck({
+            description: "The optional collateral bundle decoded successfully.",
+            domain: "collateral",
+            id: "collateral-json-parse",
+            jsonPath: "$",
+            label: "Parse collateral bundle",
+            severity: "advisory",
+            source: "local",
+            status: "pass",
+          }),
+        );
+      } else {
+        collateralChecks.push(
+          ...parsedBundle.errors.map((error, index) =>
+            buildCheck({
+              description: error.message,
+              domain: "collateral",
+              id: `collateral-schema-${index}`,
+              jsonPath: error.path,
+              label: "Validate collateral bundle schema",
+              severity: "advisory",
+              source: "local",
+              status: "fail",
+            }),
+          ),
+        );
+      }
+    }
+  }
+
+  const normalized = parseAttestationReport(parsed);
+
+  if (!normalized.ok) {
+    return buildImmediateErrorResult({
+      checks: [
+        buildCheck({
+          description: "The report decoded into a top-level JSON value.",
+          domain: "input",
+          id: "json-parse",
+          jsonPath: "$",
+          label: "Parse JSON",
+          severity: "blocking",
+          source: "local",
+          status: "pass",
+        }),
+        ...collateralChecks,
+        ...normalized.errors.map((error, index) =>
+          buildCheck({
+            description: error.message,
+            domain: "input",
+            id: `schema-${index}`,
+            jsonPath: error.path,
+            label: "Validate report schema",
+            severity: "blocking",
+            source: "local",
+            status: "fail",
+          }),
+        ),
+      ],
+      errorMessage:
+        "The report does not match the expected attestation schema. Review the diagnostics for exact field and type failures.",
+      parseErrors: normalized.errors,
     });
   }
 
-  const eventLogCount = Array.isArray(report.event_log)
-    ? report.event_log.length
-    : undefined;
+  const report = normalized.value;
+  const checks: CheckResult[] = [
+    buildCheck({
+      description: "The report decoded into a top-level JSON object.",
+      domain: "input",
+      id: "json-parse",
+      jsonPath: "$",
+      label: "Parse JSON",
+      severity: "blocking",
+      source: "local",
+      status: "pass",
+    }),
+    buildCheck({
+      description: "The report matches the typed normalization schema.",
+      domain: "input",
+      id: "report-schema",
+      jsonPath: "$",
+      label: "Validate report schema",
+      severity: "blocking",
+      source: "local",
+      status: "pass",
+    }),
+    ...collateralChecks,
+  ];
 
-  checks.push({
-    id: "event-log-shape",
-    label: "Inspect event log",
-    status: eventLogCount !== undefined ? "pass" : "fail",
-    description:
-      eventLogCount !== undefined
-        ? `The report contains ${eventLogCount} event log entries.`
-        : "The report is missing a valid array at $.event_log.",
-    jsonPath: "$.event_log",
-  });
-
-  const infoObject = isRecord(report.info) ? report.info : undefined;
-
-  checks.push({
-    id: "info-shape",
-    label: "Inspect info block",
-    status: infoObject ? "pass" : "fail",
-    description: infoObject
-      ? "The info block is available for metadata extraction."
-      : "The report is missing a valid object at $.info.",
-    jsonPath: "$.info",
-  });
-
-  const verificationAnalysis = verifyNormalizedReport(report);
+  const { verifyNormalizedReport } = await import("./verifier");
+  const verificationAnalysis = await verifyNormalizedReport(report, collateralBundle);
   checks.push(...verificationAnalysis.checks);
-  const summary = buildSummary(report, fileName, verificationAnalysis);
+  const summary = buildSummary(
+    report,
+    fileName,
+    collateralFileName,
+    verificationAnalysis,
+  );
   const verification = buildVerificationSummary({
     checks,
-    embeddedClaimsAvailable: verificationAnalysis.embeddedClaimsAvailable,
-    embeddedClaimsPassed: verificationAnalysis.embeddedClaimsPassed,
+    collateralStatus: verificationAnalysis.collateralStatus,
+    cryptographicStatus: verificationAnalysis.cryptographicStatus,
+    mode: verificationAnalysis.mode,
     verifiedAt: verificationAnalysis.verifiedAt,
   });
 
@@ -185,7 +207,7 @@ export function parseReportSource(
     state: verification.status === "invalid" ? "error" : "loaded",
     errorMessage:
       verification.status === "invalid"
-        ? "One or more verification checks failed. Review the diagnostics to see exactly what was inconsistent."
+        ? "One or more blocking verification checks failed. Review the diagnostics to see exactly which binding, measurement, certificate, or signature check failed."
         : undefined,
     checks,
     normalizedReport: report,
@@ -194,76 +216,52 @@ export function parseReportSource(
   };
 }
 
-function normalizeNvidiaPayload(value: unknown):
-  | { ok: true; value?: Record<string, unknown> }
-  | { ok: false; error: string } {
-  if (isRecord(value)) {
-    return { ok: true, value };
-  }
-
-  if (typeof value !== "string") {
-    return {
-      ok: false,
-      error: "Expected $.nvidia_payload to be a JSON string or object.",
-    };
-  }
-
-  try {
-    const parsed = JSON.parse(value);
-
-    if (!isRecord(parsed)) {
-      return {
-        ok: false,
-        error: "The NVIDIA payload decoded, but not into an object.",
-      };
-    }
-
-    return { ok: true, value: parsed };
-  } catch {
-    return {
-      ok: false,
-      error: "The NVIDIA payload could not be decoded as JSON.",
-    };
-  }
-}
-
 function buildSummary(
-  report: RawAttestationReport,
+  report: ParseResult["normalizedReport"],
   fileName?: string,
-  verificationAnalysis?: ReturnType<typeof verifyNormalizedReport>,
+  collateralFileName?: string,
+  verificationAnalysis?: {
+    derivedSigningAddress?: string;
+    quoteReportData?: string;
+    verifiedAt?: string;
+  },
 ): ReportSummary {
-  const topLevelKeys = Object.keys(report);
-  const infoObject = isRecord(report.info) ? report.info : undefined;
-  const nvidiaPayload = isRecord(report.nvidia_payload)
-    ? report.nvidia_payload
-    : undefined;
+  const topLevelKeys = report ? Object.keys(report) : [];
+  const nvidiaPayload = report?.nvidia_payload;
 
   return {
-    appName: getString(infoObject?.app_name),
-    composeHash: getString(infoObject?.compose_hash),
-    eventLogCount: Array.isArray(report.event_log)
-      ? report.event_log.length
-      : undefined,
-    eventNames: extractEventNames(report.event_log),
+    appName: typeof report?.info.app_name === "string" ? report.info.app_name : undefined,
+    collateralFileName,
+    composeHash:
+      typeof report?.info.compose_hash === "string"
+        ? report.info.compose_hash
+        : undefined,
+    derivedSigningAddress: verificationAnalysis?.derivedSigningAddress,
+    eventLogCount: Array.isArray(report?.event_log) ? report.event_log.length : undefined,
+    eventNames: extractEventNames(report?.event_log ?? []),
     fileName,
-    model: getString(report.model),
+    model: typeof report?.model === "string" ? report.model : undefined,
     nvidiaEvidenceCount: Array.isArray(nvidiaPayload?.evidence_list)
       ? nvidiaPayload.evidence_list.length
       : undefined,
-    preview: {
-      model: report.model,
-      tee_provider: report.tee_provider,
-      tee_hardware: report.tee_hardware,
-      signing_address: report.signing_address,
-      request_nonce: report.request_nonce,
-      verified: report.verified,
-      server_verification: report.server_verification,
-    },
+    preview: report
+      ? {
+          model: report.model,
+          tee_provider: report.tee_provider,
+          tee_hardware: report.tee_hardware,
+          signing_address: report.signing_address,
+          request_nonce: report.request_nonce,
+          verified: report.verified,
+          server_verification: report.server_verification,
+        }
+      : {},
     quoteReportData: verificationAnalysis?.quoteReportData,
-    derivedSigningAddress: verificationAnalysis?.derivedSigningAddress,
-    signingAddress: getString(report.signing_address),
-    teeHardware: getString(report.tee_hardware),
-    teeProvider: getString(report.tee_provider),
+    signingAddress:
+      typeof report?.signing_address === "string" ? report.signing_address : undefined,
+    teeHardware:
+      typeof report?.tee_hardware === "string" ? report.tee_hardware : undefined,
+    teeProvider:
+      typeof report?.tee_provider === "string" ? report.tee_provider : undefined,
     topLevelKeys,
     verifiedAt: verificationAnalysis?.verifiedAt,
   };
@@ -271,33 +269,41 @@ function buildSummary(
 
 function buildVerificationSummary({
   checks,
-  embeddedClaimsAvailable,
-  embeddedClaimsPassed,
+  collateralStatus,
+  cryptographicStatus,
+  mode,
   verifiedAt,
 }: {
   checks: CheckResult[];
-  embeddedClaimsAvailable?: boolean;
-  embeddedClaimsPassed?: boolean;
+  collateralStatus: VerificationSummary["collateralStatus"];
+  cryptographicStatus: VerificationSummary["cryptographicStatus"];
+  mode: VerificationSummary["mode"];
   verifiedAt?: string;
 }): VerificationSummary {
   const supportedChecks = checks.filter((check) => check.status !== "info").length;
   const passedChecks = checks.filter((check) => check.status === "pass").length;
   const failedChecks = checks.filter((check) => check.status === "fail").length;
   const infoChecks = checks.filter((check) => check.status === "info").length;
+  const blockingFailures = checks.filter(
+    (check) => check.severity === "blocking" && check.status === "fail",
+  );
 
   if (supportedChecks === 0) {
     return createIdleParseResult().verification;
   }
 
-  if (failedChecks > 0) {
+  if (blockingFailures.length > 0) {
     return {
       badge: "Verification failed",
+      collateralStatus,
+      cryptographicStatus,
       description:
-        "The verifier found a mismatch in the report structure, bindings, or measurements. The report should not be treated as verified.",
+        "A blocking local check failed. Do not treat this report as verified.",
       engineLabel: "Engine active",
       failedChecks,
       headline: "Verification failed",
       infoChecks,
+      mode,
       passedChecks,
       status: "invalid",
       supportedChecks,
@@ -305,15 +311,18 @@ function buildVerificationSummary({
     };
   }
 
-  if (embeddedClaimsAvailable && embeddedClaimsPassed) {
+  if (cryptographicStatus === "verified") {
     return {
       badge: "Verified",
+      collateralStatus,
+      cryptographicStatus,
       description:
-        "All supported local checks passed, and the report includes successful embedded TDX and NVIDIA verification claims. This attestation is verified by the current browser engine.",
+        "Blocking local structure, binding, certificate, and cryptographic checks passed.",
       engineLabel: "Engine active",
       failedChecks,
       headline: "Attestation verified",
       infoChecks,
+      mode,
       passedChecks,
       status: "verified",
       supportedChecks,
@@ -323,12 +332,15 @@ function buildVerificationSummary({
 
   return {
     badge: "Partially verified",
+    collateralStatus,
+    cryptographicStatus,
     description:
-      "All supported local bindings passed, but embedded cryptographic verification claims were missing or incomplete. Treat this as a partial verification result.",
+      "Blocking local checks passed, but the app still lacks all of the collateral or raw-evidence verification needed for a full independent proof.",
     engineLabel: "Engine active",
     failedChecks,
     headline: "Partial verification",
     infoChecks,
+    mode,
     passedChecks,
     status: "partially-verified",
     supportedChecks,
@@ -336,18 +348,22 @@ function buildVerificationSummary({
   };
 }
 
-function extractEventNames(value: unknown): string[] {
+function extractEventNames(value: ParseResult["normalizedReport"] extends infer Report
+  ? Report extends { event_log: infer EventLog }
+    ? EventLog
+    : never
+  : never): string[] {
   if (!Array.isArray(value)) {
     return [];
   }
 
   const names = value
     .map((entry) => {
-      if (!isRecord(entry)) {
+      if (!entry || typeof entry !== "object") {
         return undefined;
       }
 
-      const event = entry.event;
+      const event = "event" in entry ? entry.event : undefined;
       return typeof event === "string" && event.trim().length > 0
         ? event.trim()
         : undefined;
@@ -357,6 +373,29 @@ function extractEventNames(value: unknown): string[] {
   return Array.from(new Set(names)).slice(0, 8);
 }
 
-function getString(value: unknown): string | undefined {
-  return typeof value === "string" ? value : undefined;
+function buildImmediateErrorResult({
+  checks,
+  errorMessage,
+  parseErrors,
+}: {
+  checks: CheckResult[];
+  errorMessage: string;
+  parseErrors?: ParseResult["parseErrors"];
+}): ParseResult {
+  return {
+    state: "error",
+    checks,
+    errorMessage,
+    parseErrors,
+    verification: buildVerificationSummary({
+      checks,
+      collateralStatus: "not-requested",
+      cryptographicStatus: "unsupported",
+      mode: "offline",
+    }),
+  };
+}
+
+function buildCheck(check: CheckResult): CheckResult {
+  return check;
 }

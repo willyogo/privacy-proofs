@@ -45,7 +45,12 @@ export default function CheckList({
                 <span className={`check-glyph check-glyph-${check.status}`}>
                   {statusGlyph(check.status)}
                 </span>
-                <span className="check-title">{check.label}</span>
+                <div className="check-copy">
+                  <span className="check-title">{check.label}</span>
+                  <span className="check-meta">
+                    {check.source} · {check.domain} · {check.severity}
+                  </span>
+                </div>
               </div>
 
               <div className="check-tooltip" role="tooltip">
@@ -56,6 +61,9 @@ export default function CheckList({
                   </span>
                 </div>
                 <p className="check-tooltip-description">{check.description}</p>
+                <p className="check-tooltip-meta">
+                  {check.source} · {check.domain} · {check.severity}
+                </p>
                 <code className="check-tooltip-path">{check.jsonPath}</code>
               </div>
             </li>

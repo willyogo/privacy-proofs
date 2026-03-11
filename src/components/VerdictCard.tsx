@@ -49,12 +49,16 @@ export default function VerdictCard({ fileName, result }: VerdictCardProps) {
           </dd>
         </div>
         <div>
-          <dt>Events</dt>
-          <dd>
-            {result.summary?.eventLogCount !== undefined
-              ? String(result.summary.eventLogCount)
-              : "Unavailable"}
-          </dd>
+          <dt>Mode</dt>
+          <dd>{result.verification.mode}</dd>
+        </div>
+        <div>
+          <dt>Crypto</dt>
+          <dd>{result.verification.cryptographicStatus}</dd>
+        </div>
+        <div>
+          <dt>Collateral</dt>
+          <dd>{result.verification.collateralStatus}</dd>
         </div>
         <div>
           <dt>Verified at</dt>

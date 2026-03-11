@@ -58,6 +58,10 @@ export default function AdvancedPanel({ result }: AdvancedPanelProps) {
               <dd>{result.summary.quoteReportData ?? "Unavailable"}</dd>
             </div>
             <div>
+              <dt>Collateral file</dt>
+              <dd>{result.summary.collateralFileName ?? "Unavailable"}</dd>
+            </div>
+            <div>
               <dt>Embedded verified at</dt>
               <dd>{result.summary.verifiedAt ?? "Unavailable"}</dd>
             </div>

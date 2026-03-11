@@ -1,10 +1,18 @@
 import { useId } from "react";
 
 type JsonDropzoneProps = {
+  helperText: string;
+  kicker: string;
   onFileLoaded: (content: string, fileName?: string) => void;
+  title: string;
 };
 
-export default function JsonDropzone({ onFileLoaded }: JsonDropzoneProps) {
+export default function JsonDropzone({
+  helperText,
+  kicker,
+  onFileLoaded,
+  title,
+}: JsonDropzoneProps) {
   const inputId = useId();
 
   async function readFile(file: File) {
@@ -38,9 +46,9 @@ export default function JsonDropzone({ onFileLoaded }: JsonDropzoneProps) {
           }}
           type="file"
         />
-        <span className="dropzone-kicker">Upload</span>
-        <strong>Drop a JSON file here</strong>
-        <span>or click to choose a report from disk</span>
+        <span className="dropzone-kicker">{kicker}</span>
+        <strong>{title}</strong>
+        <span>{helperText}</span>
       </label>
     </div>
   );

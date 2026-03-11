@@ -196,9 +196,53 @@
   line-height: 1.6;
 }
 
+.json-textarea-compact {
+  min-height: 180px;
+}
+
 .json-textarea:focus {
   outline: 2px solid rgba(216, 181, 122, 0.4);
   outline-offset: 2px;
+}
+
+.input-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-top: 18px;
+}
+
+.verify-button {
+  min-height: 46px;
+  padding: 0 18px;
+  border: 1px solid rgba(216, 181, 122, 0.42);
+  border-radius: 999px;
+  background: linear-gradient(180deg, rgba(140, 100, 34, 0.42), rgba(110, 78, 24, 0.24));
+  color: #ffe9bf;
+  cursor: pointer;
+  transition:
+    transform 160ms ease,
+    opacity 160ms ease,
+    border-color 160ms ease;
+}
+
+.verify-button:hover:not(:disabled) {
+  transform: translateY(-1px);
+  border-color: rgba(240, 207, 155, 0.72);
+}
+
+.verify-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.input-files {
+  display: grid;
+  gap: 4px;
+  color: var(--text-soft);
+  font-size: 0.9rem;
 }
 
 .panel-note,
@@ -343,6 +387,11 @@
   gap: 12px;
 }
 
+.check-copy {
+  display: grid;
+  gap: 4px;
+}
+
 .check-glyph {
   display: inline-flex;
   align-items: center;
@@ -374,6 +423,14 @@
 .check-title {
   font-weight: 700;
   line-height: 1.35;
+}
+
+.check-meta,
+.check-tooltip-meta {
+  font-size: 0.78rem;
+  color: var(--text-soft);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
 }
 
 .check-status-pill {
@@ -443,6 +500,7 @@
 
 .check-tooltip-title,
 .check-tooltip-description,
+.check-tooltip-meta,
 .check-tooltip-path {
   margin: 0;
 }
@@ -455,6 +513,10 @@
 .check-tooltip-description {
   color: var(--text-soft);
   line-height: 1.6;
+}
+
+.check-tooltip-meta {
+  margin-top: 8px;
 }
 
 .check-tooltip-path {
