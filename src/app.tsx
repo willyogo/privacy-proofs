@@ -21,22 +21,19 @@ export default function App() {
     <div className="page-shell">
       <div className="page-overlay" />
       <header className="page-header">
-        <div className="brand">
-          <img
-            alt="Venice logo"
-            className="brand-logo"
-            src="/venice-logotype.svg"
-          />
-          <div>
-            <p className="eyebrow">Browser verifier</p>
-            <h1>Venice Attestation Verifier</h1>
-          </div>
+        <img
+          alt="Venice logo"
+          className="brand-logo"
+          src="/venice-logotype.svg"
+        />
+        <div className="hero-block">
+          <h1>Attestation Verifier</h1>
+          <p className="hero-copy">
+            Paste or upload a Venice attestation report to run browser-side
+            binding checks, quote consistency checks, and a clear verification
+            verdict.
+          </p>
         </div>
-        <p className="hero-copy">
-          Paste or upload a Venice attestation report to run browser-side
-          binding checks, quote consistency checks, and a clear verification
-          verdict.
-        </p>
       </header>
 
       <main className="page-grid">
