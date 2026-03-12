@@ -1,0 +1,17 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "rewrites": [
+    {
+      "source": "/intel-proxy",
+      "destination": "/api/intel-proxy"
+    },
+    {
+      "source": "/nvidia/attest/gpu",
+      "destination": "/api/nvidia/attest/gpu"
+    },
+    {
+      "source": "/nvidia/jwks",
+      "destination": "/api/nvidia/jwks"
+    }
+  ]
+}

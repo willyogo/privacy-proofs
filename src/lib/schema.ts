@@ -304,17 +304,15 @@ export function asTcbInfo(value: unknown): TcbInfo | undefined {
 export function asIntelSignedQeIdentity(
   value: unknown,
 ): IntelSignedQeIdentity | undefined {
-  return intelSignedQeIdentityObjectSchema.safeParse(value).success
-    ? (value as IntelSignedQeIdentity)
-    : undefined;
+  const result = intelSignedQeIdentitySchema.safeParse(value);
+  return result.success ? result.data : undefined;
 }
 
 export function asIntelSignedTcbInfo(
   value: unknown,
 ): IntelSignedTcbInfo | undefined {
-  return intelSignedTcbInfoObjectSchema.safeParse(value).success
-    ? (value as IntelSignedTcbInfo)
-    : undefined;
+  const result = intelSignedTcbInfoSchema.safeParse(value);
+  return result.success ? result.data : undefined;
 }
 
 function mapZodIssues(issues: z.ZodIssue[]): NormalizationError[] {

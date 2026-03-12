@@ -122,8 +122,8 @@ export async function verifyEcdsaSignature({
   signature,
   signatureFormat = "der",
 }: {
-  hash: "SHA-256" | "SHA-384";
-  namedCurve: "P-256" | "P-384";
+  hash: "SHA-256" | "SHA-384" | "SHA-512";
+  namedCurve: "P-256" | "P-384" | "P-521";
   payload: Uint8Array;
   publicKey: CryptoKey | Uint8Array;
   signature: Uint8Array;

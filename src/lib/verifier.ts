@@ -1,3 +1,4 @@
+import type { X509Certificate } from "@peculiar/x509";
 import { bytesToHex, getAddress, hexToBytes, keccak256 } from "viem";
 import type { CheckDetail, CheckResult } from "./check-result";
 import { parseDerAt } from "./asn1";
@@ -9,14 +10,28 @@ import {
   toHex,
   verifyEcdsaSignature,
 } from "./crypto";
-import { parseIntelPckExtensions } from "./intel";
+import {
+  evaluateQeIdentity,
+  evaluateTcbInfo,
+  extractIntelSignedBodyText,
+  isCollateralCurrent,
+  parseIntelPckExtensions,
+  parseQeReport,
+  verifyIntelCollateralSignature,
+} from "./intel";
 import {
   parseNvidiaEvidence,
   normalizeNvidiaArchitecture,
   verifyNvidiaEvidenceSignature,
 } from "./nvidia";
 import {
+  completeIntelOnlineVerification,
+  completeNvidiaOnlineVerification,
+} from "./online-verification";
+import {
   asInfoBlock,
+  asIntelSignedQeIdentity,
+  asIntelSignedTcbInfo,
   asServerVerification,
   asTcbInfo,
   isRecord,
@@ -24,7 +39,10 @@ import {
 import type {
   CryptographicVerificationStatus,
   EvidenceVerificationStatus,
+  IntelSignedQeIdentity,
+  IntelSignedTcbInfo,
   NormalizedAttestationReport,
+  ParseReportOptions,
   VerificationMode,
 } from "./types";
 
@@ -44,6 +62,14 @@ type VerificationAnalysis = {
 type DomainVerificationResult = {
   checks: CheckResult[];
   status: EvidenceVerificationStatus;
+};
+
+type TdxCryptographyResult = {
+  baseCryptoPassed: boolean;
+  checks: CheckResult[];
+  pckChain?: X509Certificate[];
+  pckExtensions?: ReturnType<typeof parseIntelPckExtensions>;
+  qeReport?: ReturnType<typeof parseQeReport>;
 };
 
 const TDX_HEADER_LENGTH = 48;
@@ -108,11 +134,13 @@ type DecodedQuote = {
 
 export async function verifyNormalizedReport(
   report: NormalizedAttestationReport,
+  options: ParseReportOptions = {},
 ): Promise<VerificationAnalysis> {
   const checks: CheckResult[] = [];
   let derivedSigningAddress: string | undefined;
   let quoteReportData: string | undefined;
   let verifiedAt: string | undefined;
+  const mode = options.mode ?? "offline";
 
   const evidenceStatus: VerificationAnalysis["evidenceStatus"] = {
     intel: "unsupported",
@@ -275,20 +303,22 @@ export async function verifyNormalizedReport(
       bundleLabel: "App certificate bundle",
       domain: "app",
       jsonPath: "$.info.app_cert",
+      severity: "advisory",
     });
 
     checks.push(...appCertResult.checks);
   } else {
     checks.push(
       buildCheck({
-        description: "The info block is missing the app certificate bundle.",
+        description:
+          "The info block does not include an app certificate bundle. App certificates are informational unless explicitly bound to the attested workload.",
         domain: "app-cert",
         id: "app-certificate-bundle",
         jsonPath: "$.info.app_cert",
         label: "Inspect app certificate bundle",
-        severity: "blocking",
+        severity: "advisory",
         source: "local",
-        status: "fail",
+        status: "info",
       }),
     );
   }
@@ -344,7 +374,30 @@ export async function verifyNormalizedReport(
       quote,
     });
     checks.push(...tdxCryptoResult.checks);
-    evidenceStatus.intel = tdxCryptoResult.status;
+    if (tdxCryptoResult.baseCryptoPassed) {
+      const collateralResult =
+        mode === "online" &&
+        tdxCryptoResult.pckChain &&
+        tdxCryptoResult.pckExtensions &&
+        tdxCryptoResult.qeReport
+          ? await completeIntelOnlineVerification({
+              options: options.online,
+              pckChain: tdxCryptoResult.pckChain,
+              pckExtensions: tdxCryptoResult.pckExtensions,
+              qeReport: tdxCryptoResult.qeReport,
+              quoteMrSignerSeam: quote.mrSignerSeam,
+              quoteSeamAttributes: quote.seamAttributes,
+              quoteTeeTcbSvn: quote.teeTcbSvn,
+            })
+          : await evaluateTdxCollateral({
+              pckExtensions: tdxCryptoResult.pckExtensions,
+              qeReport: tdxCryptoResult.qeReport,
+              quote,
+              report,
+            });
+      checks.push(...collateralResult.checks);
+      evidenceStatus.intel = collateralResult.status;
+    }
   } else {
     checks.push(
       buildCheck({
@@ -367,21 +420,33 @@ export async function verifyNormalizedReport(
     expectedNonce: nvidiaNonce,
   });
   checks.push(...nvidiaCryptoResult.checks);
-  evidenceStatus.nvidia = nvidiaCryptoResult.status;
+  if (mode === "online" && nvidiaCryptoResult.status === "verified") {
+    const nvidiaOnlineResult = await completeNvidiaOnlineVerification({
+      evidenceCount: evidenceList.length,
+      expectedArch: normalizeNvidiaArchitecture(report.nvidia_payload.arch),
+      expectedNonce: nvidiaNonce,
+      options: options.online,
+      payload: report.nvidia_payload,
+    });
+    checks.push(...nvidiaOnlineResult.checks);
+    evidenceStatus.nvidia = nvidiaOnlineResult.status;
+  } else {
+    evidenceStatus.nvidia = nvidiaCryptoResult.status;
+  }
 
   checks.push(...buildEventLogChecks(report));
   checks.push(...buildKeyProviderChecks(report));
 
   const serverClaims = evaluateEmbeddedClaims(report, derivedSigningAddress);
   checks.push(...serverClaims.checks);
-  verifiedAt = serverClaims.verifiedAt;
+  verifiedAt = mode === "online" ? new Date().toISOString() : serverClaims.verifiedAt;
 
   return {
     checks,
     cryptographicStatus: deriveOverallCryptographicStatus(evidenceStatus),
     derivedSigningAddress,
     evidenceStatus,
-    mode: "offline",
+    mode,
     quoteReportData,
     verifiedAt,
   };
@@ -465,101 +530,40 @@ function buildEventLogChecks(report: NormalizedAttestationReport): CheckResult[]
   const eventMap = collectNamedEventPayloads(report.event_log);
   const info = asInfoBlock(report.info);
   const tcbInfo = asTcbInfo(info?.tcb_info);
-  const checks: CheckResult[] = [];
-
-  checks.push(
-    buildCheck({
-      description:
-        normalizeHex(eventMap["app-id"]) &&
-        normalizeHex(info?.app_id) &&
-        normalizeHex(eventMap["app-id"]) === normalizeHex(info?.app_id)
-          ? "The event log app-id matches the info block."
-          : "The event log app-id does not match the info block.",
-      domain: "event-log",
+  const checks: CheckResult[] = [
+    buildHexEventBindingCheck({
+      actualValues: eventMap["app-id"] ?? [],
+      expectedValue: info?.app_id,
       id: "event-log-app-id",
-      jsonPath: "$.event_log",
       label: "Check event log app ID binding",
-      severity: "blocking",
-      source: "local",
-      status:
-        normalizeHex(eventMap["app-id"]) &&
-        normalizeHex(info?.app_id) &&
-        normalizeHex(eventMap["app-id"]) === normalizeHex(info?.app_id)
-          ? "pass"
-          : "fail",
+      matchingDescription: "The event log app-id matches the info block.",
+      mismatchDescription: "The event log app-id does not match the info block.",
     }),
-  );
-
-  checks.push(
-    buildCheck({
-      description:
-        normalizeHex(eventMap["compose-hash"]) &&
-        normalizeHex(info?.compose_hash) &&
-        normalizeHex(eventMap["compose-hash"]) === normalizeHex(info?.compose_hash)
-          ? "The event log compose hash matches the info block."
-          : "The event log compose hash does not match the info block.",
-      domain: "event-log",
+    buildHexEventBindingCheck({
+      actualValues: eventMap["compose-hash"] ?? [],
+      expectedValue: info?.compose_hash,
       id: "event-log-compose-hash",
-      jsonPath: "$.event_log",
       label: "Check event log compose hash binding",
-      severity: "blocking",
-      source: "local",
-      status:
-        normalizeHex(eventMap["compose-hash"]) &&
-        normalizeHex(info?.compose_hash) &&
-        normalizeHex(eventMap["compose-hash"]) === normalizeHex(info?.compose_hash)
-          ? "pass"
-          : "fail",
+      matchingDescription: "The event log compose hash matches the info block.",
+      mismatchDescription: "The event log compose hash does not match the info block.",
     }),
-  );
-
-  checks.push(
-    buildCheck({
-      description:
-        normalizeHex(eventMap["instance-id"]) &&
-        normalizeHex(info?.instance_id) &&
-        normalizeHex(eventMap["instance-id"]) === normalizeHex(info?.instance_id)
-          ? "The event log instance-id matches the info block."
-          : "The event log instance-id does not match the info block.",
-      domain: "event-log",
+    buildHexEventBindingCheck({
+      actualValues: eventMap["instance-id"] ?? [],
+      expectedValue: info?.instance_id,
       id: "event-log-instance-id",
-      jsonPath: "$.event_log",
       label: "Check event log instance ID binding",
-      severity: "blocking",
-      source: "local",
-      status:
-        normalizeHex(eventMap["instance-id"]) &&
-        normalizeHex(info?.instance_id) &&
-        normalizeHex(eventMap["instance-id"]) === normalizeHex(info?.instance_id)
-          ? "pass"
-          : "fail",
+      matchingDescription: "The event log instance-id matches the info block.",
+      mismatchDescription: "The event log instance-id does not match the info block.",
     }),
-  );
-
-  checks.push(
-    buildCheck({
-      description:
-        normalizeHex(eventMap["os-image-hash"]) &&
-        normalizeHex(tcbInfo?.os_image_hash) &&
-        normalizeHex(eventMap["os-image-hash"]) ===
-          normalizeHex(tcbInfo?.os_image_hash)
-          ? "The event log OS image hash matches the TCB info."
-          : "The event log OS image hash does not match the TCB info.",
-      domain: "event-log",
+    buildHexEventBindingCheck({
+      actualValues: eventMap["os-image-hash"] ?? [],
+      expectedValue: tcbInfo?.os_image_hash,
       id: "event-log-os-image-hash",
-      jsonPath: "$.event_log",
       label: "Check event log OS image hash binding",
-      severity: "blocking",
-      source: "local",
-      status:
-        normalizeHex(eventMap["os-image-hash"]) &&
-        normalizeHex(tcbInfo?.os_image_hash) &&
-        normalizeHex(eventMap["os-image-hash"]) ===
-          normalizeHex(tcbInfo?.os_image_hash)
-          ? "pass"
-          : "fail",
+      matchingDescription: "The event log OS image hash matches the TCB info.",
+      mismatchDescription: "The event log OS image hash does not match the TCB info.",
     }),
-  );
+  ];
 
   if (Array.isArray(report.event_log) && Array.isArray(tcbInfo?.event_log)) {
     checks.push(
@@ -588,21 +592,23 @@ function buildEventLogChecks(report: NormalizedAttestationReport): CheckResult[]
 function buildKeyProviderChecks(report: NormalizedAttestationReport): CheckResult[] {
   const info = asInfoBlock(report.info);
   const eventMap = collectNamedEventPayloads(report.event_log);
-  const encodedKeyProviderPayload = normalizeHex(eventMap["key-provider"]);
   const checks: CheckResult[] = [];
 
   const infoKeyProvider = parseJsonObject(info?.key_provider_info);
+  const distinctKeyProviderPayloads = distinctNormalizedValues(eventMap["key-provider"] ?? []);
   const eventKeyProvider =
-    encodedKeyProviderPayload !== undefined
-      ? parseJsonObject(hexToUtf8(encodedKeyProviderPayload))
+    distinctKeyProviderPayloads.length === 1
+      ? parseJsonObject(hexToUtf8(distinctKeyProviderPayloads[0]!))
       : undefined;
 
   checks.push(
     buildCheck({
       description:
-        infoKeyProvider &&
-        eventKeyProvider &&
-        JSON.stringify(infoKeyProvider) === JSON.stringify(eventKeyProvider)
+        distinctKeyProviderPayloads.length > 1
+          ? "The event log contains conflicting key-provider payloads."
+          : infoKeyProvider &&
+            eventKeyProvider &&
+            JSON.stringify(infoKeyProvider) === JSON.stringify(eventKeyProvider)
           ? "The key provider metadata matches between the info block and event log."
           : "The key provider metadata does not match between the info block and event log.",
       domain: "event-log",
@@ -612,9 +618,11 @@ function buildKeyProviderChecks(report: NormalizedAttestationReport): CheckResul
       severity: "blocking",
       source: "local",
       status:
-        infoKeyProvider &&
-        eventKeyProvider &&
-        JSON.stringify(infoKeyProvider) === JSON.stringify(eventKeyProvider)
+        distinctKeyProviderPayloads.length > 1
+          ? "fail"
+          : infoKeyProvider &&
+            eventKeyProvider &&
+            JSON.stringify(infoKeyProvider) === JSON.stringify(eventKeyProvider)
           ? "pass"
           : "fail",
     }),
@@ -623,11 +631,224 @@ function buildKeyProviderChecks(report: NormalizedAttestationReport): CheckResul
   return checks;
 }
 
+async function evaluateTdxCollateral({
+  pckExtensions,
+  qeReport,
+  quote,
+  report,
+}: {
+  pckExtensions?: ReturnType<typeof parseIntelPckExtensions>;
+  qeReport?: ReturnType<typeof parseQeReport>;
+  quote: DecodedQuote;
+  report: NormalizedAttestationReport;
+}): Promise<DomainVerificationResult> {
+  const checks: CheckResult[] = [];
+  const collateral = extractIntelCollateral(report);
+  const hasCompleteCollateral =
+    collateral.qeIdentity.value !== undefined &&
+    collateral.signedTcbInfo.value !== undefined &&
+    collateral.tcbSignChain.value !== undefined;
+  const anyCollateralPresent =
+    collateral.qeIdentity.rawValue !== undefined ||
+    collateral.signedTcbInfo.rawValue !== undefined ||
+    collateral.tcbSignChain.rawValue !== undefined;
+
+  checks.push(
+    buildCheck({
+      description: hasCompleteCollateral
+        ? "The raw report includes Intel QE identity, signed TCB info, and TCB signing chain collateral."
+        : "The raw report does not include a complete Intel collateral set, so Intel verification remains partial after quote cryptography.",
+      details: [
+        buildDetail("QE identity path", collateral.qeIdentity.jsonPath),
+        buildDetail("Signed TCB info path", collateral.signedTcbInfo.jsonPath),
+        buildDetail("TCB signing chain path", collateral.tcbSignChain.jsonPath),
+      ],
+      domain: "tdx",
+      id: "intel-collateral-availability",
+      jsonPath: "$",
+      label: "Inspect Intel collateral availability",
+      severity: "advisory",
+      source: "local",
+      status: hasCompleteCollateral ? "pass" : anyCollateralPresent ? "fail" : "info",
+    }),
+  );
+
+  if (!hasCompleteCollateral || !pckExtensions || !qeReport) {
+    return {
+      checks,
+      status: "partial",
+    };
+  }
+
+  const qeIdentity = collateral.qeIdentity.value;
+  const signedTcbInfo = collateral.signedTcbInfo.value;
+  const tcbSignChain = collateral.tcbSignChain.value;
+  if (!qeIdentity || !signedTcbInfo || !tcbSignChain) {
+    return {
+      checks,
+      status: "partial",
+    };
+  }
+
+  const signingChainResult = await validateCertificateChain({
+    bundle: tcbSignChain,
+    bundleLabel: "Intel TCB signing chain",
+    domain: "intel",
+    jsonPath: collateral.tcbSignChain.jsonPath,
+    severity: "advisory",
+  });
+  checks.push(...signingChainResult.checks);
+
+  const qeIdentitySignatureValid = await verifyIntelCollateralSignature({
+    body: qeIdentity.enclaveIdentity,
+    chain: signingChainResult.chain ?? [],
+    signedBodyText: extractIntelSignedBodyText(
+      collateral.qeIdentity.rawValue,
+      "enclaveIdentity",
+    ),
+    signatureHex: qeIdentity.signature,
+  });
+  checks.push(
+    buildCheck({
+      description: qeIdentitySignatureValid
+        ? "The Intel QE identity signature validates against the Intel TCB signing chain."
+        : "The Intel QE identity signature does not validate against the Intel TCB signing chain.",
+      domain: "tdx",
+      id: "intel-qe-identity-signature",
+      jsonPath: collateral.qeIdentity.jsonPath,
+      label: "Verify Intel QE identity signature",
+      severity: "advisory",
+      source: "local",
+      status: qeIdentitySignatureValid ? "pass" : "fail",
+    }),
+  );
+
+  const qeIdentityEvaluation = evaluateQeIdentity({
+    qeIdentity: qeIdentity.enclaveIdentity,
+    qeReport,
+  });
+  checks.push(
+    buildCheck({
+      description: qeIdentityEvaluation.acceptable
+        ? "The QE report matches the signed Intel QE identity."
+        : "The QE report does not fully match the signed Intel QE identity.",
+      details: [
+        buildDetail("QE identity status", qeIdentityEvaluation.status),
+        buildDetail("MRSIGNER match", qeIdentityEvaluation.mrsignerMatch),
+      ],
+      domain: "tdx",
+      id: "intel-qe-identity-match",
+      jsonPath: collateral.qeIdentity.jsonPath,
+      label: "Check Intel QE identity match",
+      severity: "advisory",
+      source: "local",
+      status: qeIdentityEvaluation.acceptable ? "pass" : "fail",
+    }),
+  );
+
+  const qeIdentityCurrent = isCollateralCurrent(qeIdentity.enclaveIdentity);
+  checks.push(
+    buildCheck({
+      description: qeIdentityCurrent
+        ? "The signed Intel QE identity is within its validity window."
+        : "The signed Intel QE identity is outside its validity window.",
+      domain: "tdx",
+      id: "intel-qe-identity-validity",
+      jsonPath: collateral.qeIdentity.jsonPath,
+      label: "Check Intel QE identity freshness",
+      severity: "advisory",
+      source: "local",
+      status: qeIdentityCurrent ? "pass" : "fail",
+    }),
+  );
+
+  const tcbInfoSignatureValid = await verifyIntelCollateralSignature({
+    body: signedTcbInfo.tcbInfo,
+    chain: signingChainResult.chain ?? [],
+    signedBodyText: extractIntelSignedBodyText(
+      collateral.signedTcbInfo.rawValue,
+      "tcbInfo",
+    ),
+    signatureHex: signedTcbInfo.signature,
+  });
+  checks.push(
+    buildCheck({
+      description: tcbInfoSignatureValid
+        ? "The Intel signed TCB info validates against the Intel TCB signing chain."
+        : "The Intel signed TCB info does not validate against the Intel TCB signing chain.",
+      domain: "tdx",
+      id: "intel-tcb-info-signature",
+      jsonPath: collateral.signedTcbInfo.jsonPath,
+      label: "Verify Intel TCB info signature",
+      severity: "advisory",
+      source: "local",
+      status: tcbInfoSignatureValid ? "pass" : "fail",
+    }),
+  );
+
+  const tcbEvaluation = evaluateTcbInfo({
+    pckExtensions,
+    quoteMrSignerSeam: quote.mrSignerSeam,
+    quoteSeamAttributes: quote.seamAttributes,
+    quoteTeeTcbSvn: quote.teeTcbSvn,
+    tcbInfo: signedTcbInfo.tcbInfo,
+  });
+  checks.push(
+    buildCheck({
+      description: tcbEvaluation.acceptable
+        ? "The quote and PCK extensions satisfy the signed Intel TCB info."
+        : "The quote and PCK extensions do not satisfy the signed Intel TCB info.",
+      details: [
+        buildDetail("TCB status", tcbEvaluation.status),
+        buildDetail("FMSPC match", tcbEvaluation.fmspcMatch),
+        buildDetail("PCE ID match", tcbEvaluation.pceIdMatch),
+      ],
+      domain: "tdx",
+      id: "intel-tcb-info-match",
+      jsonPath: collateral.signedTcbInfo.jsonPath,
+      label: "Check Intel TCB level match",
+      severity: "advisory",
+      source: "local",
+      status: tcbEvaluation.acceptable ? "pass" : "fail",
+    }),
+  );
+
+  const tcbInfoCurrent = isCollateralCurrent(signedTcbInfo.tcbInfo);
+  checks.push(
+    buildCheck({
+      description: tcbInfoCurrent
+        ? "The Intel signed TCB info is within its validity window."
+        : "The Intel signed TCB info is outside its validity window.",
+      domain: "tdx",
+      id: "intel-tcb-info-validity",
+      jsonPath: collateral.signedTcbInfo.jsonPath,
+      label: "Check Intel TCB info freshness",
+      severity: "advisory",
+      source: "local",
+      status: tcbInfoCurrent ? "pass" : "fail",
+    }),
+  );
+
+  const fullyVerified =
+    !hasFailures(signingChainResult.checks) &&
+    qeIdentitySignatureValid &&
+    qeIdentityEvaluation.acceptable &&
+    qeIdentityCurrent &&
+    tcbInfoSignatureValid &&
+    tcbEvaluation.acceptable &&
+    tcbInfoCurrent;
+
+  return {
+    checks,
+    status: fullyVerified ? "verified" : "partial",
+  };
+}
+
 async function verifyTdxQuoteCryptography({
   quote,
 }: {
   quote: DecodedQuote;
-}): Promise<DomainVerificationResult> {
+}): Promise<TdxCryptographyResult> {
   const checks: CheckResult[] = [];
 
   if (
@@ -653,8 +874,8 @@ async function verifyTdxQuoteCryptography({
     );
 
     return {
+      baseCryptoPassed: false,
       checks,
-      status: "unsupported",
     };
   }
 
@@ -804,6 +1025,22 @@ async function verifyTdxQuoteCryptography({
   const pckExtensions = chainResult.chain?.[0]
     ? parseIntelPckExtensions(chainResult.chain[0])
     : undefined;
+  const qeReport = parseQeReport(quote.qeReport);
+
+  checks.push(
+    buildCheck({
+      description: qeReport
+        ? "The QE report parsed into structured fields for collateral evaluation."
+        : "The QE report could not be parsed into structured fields for collateral evaluation.",
+      domain: "tdx",
+      id: "intel-qe-report-parse",
+      jsonPath: "$.intel_quote",
+      label: "Parse Intel QE report",
+      severity: "blocking",
+      source: "local",
+      status: qeReport ? "pass" : "fail",
+    }),
+  );
 
   checks.push(
     buildCheck({
@@ -824,12 +1061,16 @@ async function verifyTdxQuoteCryptography({
     localQuoteSignatureValid &&
     qeReportSignatureValid &&
     qeReportDataMatches &&
+    qeReport !== undefined &&
     pckExtensions !== undefined &&
     !hasBlockingFailures(chainResult.checks);
 
   return {
+    baseCryptoPassed,
     checks,
-    status: baseCryptoPassed ? "verified" : "unsupported",
+    pckChain: chainResult.chain,
+    pckExtensions,
+    qeReport,
   };
 }
 
@@ -962,19 +1203,24 @@ async function verifyNvidiaEvidence({
     checks.push(
       buildCheck({
         description: archMatches
-          ? "The NVIDIA evidence architecture matches the reported NVIDIA payload architecture."
-          : "The NVIDIA evidence architecture does not match the reported NVIDIA payload architecture.",
+          ? "The reported NVIDIA architecture metadata is internally consistent."
+          : "The reported NVIDIA architecture metadata is inconsistent. This field is advisory because it is not independently derived from the raw evidence.",
         details: [
           buildDetail("Reported payload architecture", expectedArch),
-          buildDetail("Evidence architecture", actualArch),
+          buildDetail("Entry architecture metadata", actualArch),
         ],
         domain: "nvidia",
         id: `nvidia-evidence-arch-${index}`,
         jsonPath: `$.nvidia_payload.evidence_list[${index}].arch`,
-        label: "Check NVIDIA architecture binding",
-        severity: "blocking",
+        label: "Compare NVIDIA architecture metadata",
+        severity: "advisory",
         source: "local",
-        status: archMatches ? "pass" : "fail",
+        status:
+          expectedArch === undefined && actualArch === undefined
+            ? "info"
+            : archMatches
+              ? "pass"
+              : "fail",
       }),
     );
 
@@ -1034,7 +1280,6 @@ async function verifyNvidiaEvidence({
       hasBlockingFailures(chainResult.checks) ||
       !signatureValid ||
       !nonceMatches ||
-      !archMatches ||
       !fwidMatches ||
       !opaqueVersionSupported
     ) {
@@ -1440,8 +1685,8 @@ function mrConfigIdEmbedsComposeHash(
 
 function collectNamedEventPayloads(
   value: NormalizedAttestationReport["event_log"],
-): Record<string, string> {
-  const namedPayloads: Record<string, string> = {};
+): Record<string, string[]> {
+  const namedPayloads: Record<string, string[]> = {};
 
   for (const entry of value) {
     if (!isRecord(entry)) {
@@ -1456,10 +1701,148 @@ function collectNamedEventPayloads(
       continue;
     }
 
-    namedPayloads[entry.event.trim()] = entry.event_payload;
+    const key = entry.event.trim();
+    const existing = namedPayloads[key] ?? [];
+    existing.push(entry.event_payload);
+    namedPayloads[key] = existing;
   }
 
   return namedPayloads;
+}
+
+function buildHexEventBindingCheck({
+  actualValues,
+  expectedValue,
+  id,
+  label,
+  matchingDescription,
+  mismatchDescription,
+}: {
+  actualValues: string[];
+  expectedValue: unknown;
+  id: string;
+  label: string;
+  matchingDescription: string;
+  mismatchDescription: string;
+}): CheckResult {
+  const distinctActualValues = distinctNormalizedValues(actualValues);
+  const expected = normalizeHex(expectedValue);
+  const isAmbiguous = distinctActualValues.length > 1;
+  const actual = distinctActualValues.length === 1 ? distinctActualValues[0] : undefined;
+
+  return buildCheck({
+    description: isAmbiguous
+      ? "The event log contains multiple conflicting payloads for this security-critical event."
+      : actual && expected && actual === expected
+        ? matchingDescription
+        : mismatchDescription,
+    domain: "event-log",
+    id,
+    jsonPath: "$.event_log",
+    label,
+    severity: "blocking",
+    source: "local",
+    status: isAmbiguous ? "fail" : actual && expected && actual === expected ? "pass" : "fail",
+  });
+}
+
+function distinctNormalizedValues(values: string[]): string[] {
+  return Array.from(
+    new Set(values.map((value) => normalizeHex(value)).filter((value): value is string => Boolean(value))),
+  );
+}
+
+function extractIntelCollateral(report: NormalizedAttestationReport): {
+  qeIdentity: CollateralField<IntelSignedQeIdentity>;
+  signedTcbInfo: CollateralField<IntelSignedTcbInfo>;
+  tcbSignChain: CollateralField<string>;
+} {
+  return {
+    qeIdentity: pickCollateralField(report, [
+      "$.intel_qe_identity",
+      "$.qe_identity",
+      "$.intel.qe_identity",
+      "$.intel.qeIdentity",
+      "$.intel_collateral.qe_identity",
+      "$.intel_collateral.qeIdentity",
+    ], asIntelSignedQeIdentity),
+    signedTcbInfo: pickCollateralField(report, [
+      "$.intel_signed_tcb_info",
+      "$.intel_tcb_info",
+      "$.intel.signed_tcb_info",
+      "$.intel.tcb_info",
+      "$.intel.signedTcbInfo",
+      "$.intel.tcbInfo",
+      "$.intel_collateral.signed_tcb_info",
+      "$.intel_collateral.tcb_info",
+      "$.intel_collateral.signedTcbInfo",
+      "$.intel_collateral.tcbInfo",
+    ], asIntelSignedTcbInfo),
+    tcbSignChain: pickCollateralField(report, [
+      "$.intel_tcb_sign_chain",
+      "$.intel_tcb_signing_chain",
+      "$.tcb_sign_chain",
+      "$.intel.tcb_sign_chain",
+      "$.intel.tcb_signing_chain",
+      "$.intel.tcbSignChain",
+      "$.intel.tcbSigningChain",
+      "$.intel_collateral.tcb_sign_chain",
+      "$.intel_collateral.tcb_signing_chain",
+      "$.intel_collateral.tcbSignChain",
+      "$.intel_collateral.tcbSigningChain",
+    ], (value) => typeof value === "string" && value.length > 0 ? value : undefined),
+  };
+}
+
+type CollateralField<T> = {
+  jsonPath: string;
+  rawValue?: unknown;
+  value?: T;
+};
+
+function pickCollateralField<T>(
+  report: NormalizedAttestationReport,
+  candidatePaths: string[],
+  parser: (value: unknown) => T | undefined,
+): CollateralField<T> {
+  for (const path of candidatePaths) {
+    const rawValue = readPath(report, path);
+    if (rawValue === undefined) {
+      continue;
+    }
+
+    return {
+      jsonPath: path,
+      rawValue,
+      value: parser(rawValue),
+    };
+  }
+
+  return {
+    jsonPath: candidatePaths[0] ?? "$",
+  };
+}
+
+function readPath(value: unknown, path: string): unknown {
+  if (!path.startsWith("$")) {
+    return undefined;
+  }
+
+  const segments = path
+    .replace(/^\$\./, "")
+    .split(".")
+    .filter((segment) => segment.length > 0);
+
+  let current: unknown = value;
+  for (const segment of segments) {
+    if (!isRecord(current) || !(segment in current)) {
+      return undefined;
+    }
+
+    current = current[segment];
+  }
+
+  return current;
 }
 
 function deriveEthereumAddress(publicKeyHex: string): string {
@@ -1579,6 +1962,10 @@ function hasBlockingFailures(checks: CheckResult[]): boolean {
   return checks.some(
     (check) => check.severity === "blocking" && check.status === "fail",
   );
+}
+
+function hasFailures(checks: CheckResult[]): boolean {
+  return checks.some((check) => check.status === "fail");
 }
 
 function buildCheck({

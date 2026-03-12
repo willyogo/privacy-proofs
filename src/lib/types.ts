@@ -8,6 +8,19 @@ export type VerificationStatus =
 
 export type VerificationMode = "offline" | "online";
 
+export type OnlineVerificationOptions = {
+  fetchImpl?: typeof fetch;
+  intelBaseUrl?: string;
+  nvidiaApiKey?: string;
+  nvidiaBaseUrl?: string;
+  nvidiaJwksUrl?: string;
+};
+
+export type ParseReportOptions = {
+  mode?: VerificationMode;
+  online?: OnlineVerificationOptions;
+};
+
 export type CryptographicVerificationStatus =
   | "verified"
   | "partial"

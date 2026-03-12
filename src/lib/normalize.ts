@@ -1,6 +1,7 @@
 import type { CheckResult } from "./check-result";
 import { parseAttestationReport } from "./schema";
 import type {
+  ParseReportOptions,
   ParseResult,
   ReportSummary,
   VerificationSummary,
@@ -14,12 +15,12 @@ export function createIdleParseResult(): ParseResult {
       badge: "Awaiting input",
       cryptographicStatus: "unsupported",
       description:
-        "Paste or upload an attestation report, then run the browser-side verifier.",
+        "Paste or upload an attestation report, then run the local verifier or complete live vendor verification.",
       evidenceStatus: {
         intel: "unsupported",
         nvidia: "unsupported",
       },
-      engineLabel: "Engine ready",
+      engineLabel: "Verifier ready",
       failedChecks: 0,
       headline: "Ready to Verify",
       infoChecks: 0,
@@ -34,6 +35,7 @@ export function createIdleParseResult(): ParseResult {
 export async function parseReportSource(
   source: string,
   fileName?: string,
+  options: ParseReportOptions = {},
 ): Promise<ParseResult> {
   if (source.trim().length === 0) {
     return createIdleParseResult();
@@ -121,7 +123,7 @@ export async function parseReportSource(
   ];
 
   const { verifyNormalizedReport } = await import("./verifier");
-  const verificationAnalysis = await verifyNormalizedReport(report);
+  const verificationAnalysis = await verifyNormalizedReport(report, options);
   checks.push(...verificationAnalysis.checks);
   const summary = buildSummary(report, fileName, verificationAnalysis);
   const verification = buildVerificationSummary({
@@ -224,9 +226,11 @@ function buildVerificationSummary({
       badge: "Verification failed",
       cryptographicStatus,
       description:
-        "A blocking local check failed. Do not treat this report as verified.",
+        mode === "online"
+          ? "A blocking local or vendor-backed check failed. Do not treat this report as verified."
+          : "A blocking local check failed. Do not treat this report as verified.",
       evidenceStatus,
-      engineLabel: "Engine active",
+      engineLabel: mode === "online" ? "Online completion" : "Local engine",
       failedChecks,
       headline: "Verification failed",
       infoChecks,
@@ -240,14 +244,16 @@ function buildVerificationSummary({
 
   if (cryptographicStatus === "verified") {
     return {
-      badge: "Verified",
+      badge: mode === "online" ? "Fully verified" : "Locally verified",
       cryptographicStatus,
       description:
-        "Blocking local structure, binding, certificate, and cryptographic checks passed.",
+        mode === "online"
+          ? "All local checks passed, Intel collateral was re-fetched from Intel PCS, and NVIDIA evidence was confirmed with live NRAS verification."
+          : "All supported local evidence checks passed. Run online completion to reach the vendor-backed full verification path.",
       evidenceStatus,
-      engineLabel: "Engine active",
+      engineLabel: mode === "online" ? "Online completion" : "Local engine",
       failedChecks,
-      headline: "Attestation verified",
+      headline: mode === "online" ? "Full verification complete" : "Local verification complete",
       infoChecks,
       mode,
       passedChecks,
@@ -261,11 +267,13 @@ function buildVerificationSummary({
     badge: "Partially verified",
     cryptographicStatus,
     description:
-      "Blocking local checks passed, but the raw report did not contain enough supported evidence to complete every independent verification path.",
+      mode === "online"
+        ? "Blocking checks passed, but one or more vendor-backed completion steps were unavailable or incomplete, so the report did not reach a fully verified result."
+        : "Blocking local checks passed, but one or more evidence paths remained incomplete, unsupported, or collateral-limited, so the app did not reach a full verification result.",
     evidenceStatus,
-    engineLabel: "Engine active",
+    engineLabel: mode === "online" ? "Online completion" : "Local engine",
     failedChecks,
-    headline: "Partial verification",
+    headline: mode === "online" ? "Online verification incomplete" : "Partial verification",
     infoChecks,
     mode,
     passedChecks,

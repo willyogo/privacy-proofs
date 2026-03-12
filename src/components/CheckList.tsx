@@ -374,7 +374,15 @@ function severityLabel(severity: CheckResult["severity"]): string {
 }
 
 function sourceLabel(source: CheckResult["source"]): string {
-  return source === "embedded" ? "Embedded claim" : "Local check";
+  if (source === "embedded") {
+    return "Embedded claim";
+  }
+
+  if (source === "online") {
+    return "Online check";
+  }
+
+  return "Local check";
 }
 
 function capitalize(value: string): string {

@@ -2,15 +2,21 @@ import {
   X509Certificate,
   X509ChainBuilder,
 } from "@peculiar/x509";
-import type { CheckResult } from "./check-result";
+import type { CheckResult, CheckSeverity, CheckSource } from "./check-result";
 import { sha256Hex } from "./crypto";
-import { getPinnedRootFingerprints, type TrustDomain } from "./trust-store";
+import {
+  getPinnedRootFingerprints,
+  getPinnedRootPemCertificates,
+  type TrustDomain,
+} from "./trust-store";
 
 type CertificateValidationOptions = {
   bundle: string;
   bundleLabel: string;
   domain: TrustDomain;
   jsonPath: string;
+  severity?: CheckSeverity;
+  source?: CheckSource;
 };
 
 type CertificateValidationResult = {
@@ -23,6 +29,8 @@ export async function validateCertificateChain({
   bundleLabel,
   domain,
   jsonPath,
+  severity = "blocking",
+  source = "local",
 }: CertificateValidationOptions): Promise<CertificateValidationResult> {
   const checks: CheckResult[] = [];
   const pems = splitPemBundle(bundle);
@@ -36,8 +44,8 @@ export async function validateCertificateChain({
           id: `${domain}-certificate-shape`,
           jsonPath,
           label: `Parse ${bundleLabel}`,
-          severity: "blocking",
-          source: "local",
+          severity,
+          source,
           status: "fail",
         }),
       ],
@@ -59,8 +67,8 @@ export async function validateCertificateChain({
           id: `${domain}-certificate-shape`,
           jsonPath,
           label: `Parse ${bundleLabel}`,
-          severity: "blocking",
-          source: "local",
+          severity,
+          source,
           status: "fail",
         }),
       ],
@@ -74,15 +82,16 @@ export async function validateCertificateChain({
       id: `${domain}-certificate-shape`,
       jsonPath,
       label: `Parse ${bundleLabel}`,
-      severity: "blocking",
-      source: "local",
+      severity,
+      source,
       status: "pass",
     }),
   );
 
+  const trustAnchors = parsePinnedRoots(domain);
   let chain: X509Certificate[];
   try {
-    chain = await buildBestCertificateChain(certificates);
+    chain = await buildBestCertificateChain(certificates, trustAnchors);
   } catch (error) {
     return {
       checks: [
@@ -96,8 +105,8 @@ export async function validateCertificateChain({
           id: `${domain}-certificate-chain`,
           jsonPath,
           label: `Validate ${bundleLabel} chain`,
-          severity: "blocking",
-          source: "local",
+          severity,
+          source,
           status: "fail",
         }),
       ],
@@ -111,8 +120,8 @@ export async function validateCertificateChain({
       id: `${domain}-certificate-chain`,
       jsonPath,
       label: `Validate ${bundleLabel} chain`,
-      severity: "blocking",
-      source: "local",
+      severity,
+      source,
       status: "pass",
     }),
   );
@@ -131,48 +140,32 @@ export async function validateCertificateChain({
       id: `${domain}-certificate-validity`,
       jsonPath,
       label: `Check ${bundleLabel} validity window`,
-      severity: "blocking",
-      source: "local",
+      severity,
+      source,
       status: expiredCertificate ? "fail" : "pass",
     }),
   );
 
   const root = chain.at(-1);
   const expectedFingerprints = getPinnedRootFingerprints(domain);
-  const providedPinnedRoot = certificates.find(
-    (certificate) => {
-      const fingerprint = sha256Hex(new Uint8Array(certificate.rawData));
-      return expectedFingerprints.includes(fingerprint);
-    },
-  );
   const actualFingerprint =
     root !== undefined ? sha256Hex(new Uint8Array(root.rawData)) : undefined;
-  const effectiveRoot =
-    actualFingerprint && expectedFingerprints.includes(actualFingerprint)
-      ? root
-      : providedPinnedRoot;
-
-  if (
-    effectiveRoot &&
-    chain.at(-1) !== effectiveRoot &&
-    !chain.some((certificate) => certificate === effectiveRoot)
-  ) {
-    chain = [...chain, effectiveRoot];
-  }
+  const anchoredToPinnedRoot =
+    actualFingerprint !== undefined && expectedFingerprints.includes(actualFingerprint);
 
   checks.push(
     buildCheck({
       description:
-        effectiveRoot !== undefined
+        anchoredToPinnedRoot
           ? `${bundleLabel} terminates at the pinned ${domain} trust anchor.`
           : `${bundleLabel} does not terminate at the pinned ${domain} trust anchor.`,
       domain: certificateDomain(domain),
       id: `${domain}-root-pin`,
       jsonPath,
       label: `Check ${bundleLabel} root pin`,
-      severity: "blocking",
-      source: "local",
-      status: effectiveRoot !== undefined ? "pass" : "fail",
+      severity,
+      source,
+      status: anchoredToPinnedRoot ? "pass" : "fail",
     }),
   );
 
@@ -188,6 +181,7 @@ export function splitPemBundle(bundle: string): string[] {
 
 async function buildBestCertificateChain(
   certificates: X509Certificate[],
+  trustAnchors: X509Certificate[],
 ): Promise<X509Certificate[]> {
   const candidates = [...certificates].sort((left, right) => {
     const leftIssuedCount = countIssuedCertificates(left, certificates);
@@ -206,7 +200,10 @@ async function buildBestCertificateChain(
     try {
       const chain = Array.from(
         await new X509ChainBuilder({
-          certificates: certificates.filter((certificate) => certificate !== leaf),
+          certificates: uniqueCertificates([
+            ...certificates.filter((certificate) => certificate !== leaf),
+            ...trustAnchors,
+          ]),
         }).build(leaf),
       );
 
@@ -237,6 +234,24 @@ function countIssuedCertificates(
 
 function isSelfSigned(certificate: X509Certificate): boolean {
   return certificate.subject === certificate.issuer;
+}
+
+function parsePinnedRoots(domain: TrustDomain): X509Certificate[] {
+  return getPinnedRootPemCertificates(domain).map((pem) => new X509Certificate(pem));
+}
+
+function uniqueCertificates(certificates: X509Certificate[]): X509Certificate[] {
+  const seen = new Set<string>();
+
+  return certificates.filter((certificate) => {
+    const fingerprint = sha256Hex(new Uint8Array(certificate.rawData));
+    if (seen.has(fingerprint)) {
+      return false;
+    }
+
+    seen.add(fingerprint);
+    return true;
+  });
 }
 
 function certificateDomain(domain: TrustDomain): CheckResult["domain"] {

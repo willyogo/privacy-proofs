@@ -1,6 +1,6 @@
 export type CheckStatus = "pass" | "fail" | "info";
 
-export type CheckSource = "local" | "embedded";
+export type CheckSource = "local" | "online" | "embedded";
 
 export type CheckSeverity = "blocking" | "advisory";
 

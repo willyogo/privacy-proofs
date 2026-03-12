@@ -68,7 +68,7 @@ export default function VerdictCard({
             <dd>{result.verification.cryptographicStatus}</dd>
           </div>
           <div>
-            <dt>Embedded Venice/NRAS verified at</dt>
+            <dt>Verification timestamp</dt>
             <dd>{formattedVerifiedAt}</dd>
           </div>
         </dl>
@@ -79,7 +79,7 @@ export default function VerdictCard({
 
 function formatVerifiedAt(value?: string): string {
   if (!value) {
-    return "Not embedded";
+    return "Unavailable";
   }
 
   const parsed = new Date(value);
