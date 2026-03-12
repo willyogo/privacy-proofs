@@ -31,7 +31,7 @@ type OnlineVerificationResult = {
 };
 
 const DEFAULT_INTEL_PCS_ORIGIN = "https://api.trustedservices.intel.com";
-const DEFAULT_INTEL_PCS_BASE_URL = "/api/intel-proxy";
+const DEFAULT_INTEL_PCS_BASE_URL = "/intel-proxy";
 const DEFAULT_NVIDIA_NRAS_BASE_URL = "https://nras.attestation.nvidia.com/v4";
 const DEFAULT_NVIDIA_JWKS_URL =
   "https://nras.attestation.nvidia.com/.well-known/jwks.json";

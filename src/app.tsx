@@ -3,6 +3,7 @@ import AdvancedPanel from "./components/AdvancedPanel";
 import CheckList from "./components/CheckList";
 import InputPanel from "./components/InputPanel";
 import VerdictCard from "./components/VerdictCard";
+import { INTEL_PROXY_ROUTE } from "./lib/intel-collateral-proxy";
 import { NVIDIA_JWKS_ROUTE, NVIDIA_PROXY_BASE_ROUTE } from "./lib/nvidia-collateral-proxy";
 import { createIdleParseResult, parseReportSource } from "./lib/normalize";
 import type { ParseResult, VerificationMode } from "./lib/types";
@@ -41,7 +42,7 @@ export default function App() {
           ? {
               intelBaseUrl:
                 sanitizeEnvValue(runtimeEnv?.VITE_INTEL_PCS_BASE_URL) ??
-                "/api/intel-proxy",
+                INTEL_PROXY_ROUTE,
               nvidiaApiKey:
                 sanitizeEnvValue(nvidiaApiKey) ??
                 sanitizeEnvValue(runtimeEnv?.VITE_NVIDIA_NRAS_API_KEY),

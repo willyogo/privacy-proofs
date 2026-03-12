@@ -159,7 +159,7 @@ Optional environment variables for the online path:
 ## Deployment Notes
 
 - The app is still a static frontend plus thin same-origin proxy routes for Intel PCS and NVIDIA NRAS.
-- Vercel deployments should serve `/api/intel-proxy`, `/api/nvidia/attest/gpu`, and `/api/nvidia/jwks` from the repo's `api/` directory.
+- Vercel deployments expose `/intel-proxy`, `/nvidia/attest/gpu`, and `/nvidia/jwks` to the browser, with rewrites into the repo's `api/` directory.
 - The production build code-splits the heavy verifier path so the landing bundle stays smaller and the crypto/X.509 stack loads on demand.
 - Static hosts should set a CSP and other security headers at the edge. This repo does not yet ship host-specific config for Vercel, Netlify, or Cloudflare Pages.
 

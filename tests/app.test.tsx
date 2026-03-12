@@ -125,10 +125,10 @@ describe("App", () => {
     expect(parseReportSource).toHaveBeenCalledWith('{"report":true}', undefined, {
       mode: "online",
       online: {
-        intelBaseUrl: "/api/intel-proxy",
+        intelBaseUrl: "/intel-proxy",
         nvidiaApiKey: "fixture-api-key",
-        nvidiaBaseUrl: "/api/nvidia",
-        nvidiaJwksUrl: "/api/nvidia/jwks",
+        nvidiaBaseUrl: "/nvidia",
+        nvidiaJwksUrl: "/nvidia/jwks",
       },
     });
   });

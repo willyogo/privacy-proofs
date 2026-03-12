@@ -1,4 +1,4 @@
-export const NVIDIA_PROXY_BASE_ROUTE = "/api/nvidia";
+export const NVIDIA_PROXY_BASE_ROUTE = "/nvidia";
 export const NVIDIA_ATTEST_ROUTE = `${NVIDIA_PROXY_BASE_ROUTE}/attest/gpu`;
 export const NVIDIA_JWKS_ROUTE = `${NVIDIA_PROXY_BASE_ROUTE}/jwks`;
 
@@ -51,22 +51,40 @@ export async function proxyNvidiaAttestationRequest({
     upstreamHeaders.set("content-type", "application/json");
   }
 
-  const upstreamResponse = await fetch(NVIDIA_ATTEST_URL, {
-    body,
-    headers: upstreamHeaders,
-    method: "POST",
-  });
+  let upstreamResponse: Response;
+  try {
+    upstreamResponse = await fetch(NVIDIA_ATTEST_URL, {
+      body,
+      headers: upstreamHeaders,
+      method: "POST",
+    });
+  } catch (error) {
+    return buildNvidiaProxyErrorResponse(
+      error,
+      "nvidia-attest-proxy",
+      "NVIDIA attestation proxy request failed",
+    );
+  }
 
   return buildNvidiaProxyResponse(upstreamResponse, "nvidia-attest-proxy");
 }
 
 export async function proxyNvidiaJwksRequest(): Promise<Response> {
-  const upstreamResponse = await fetch(NVIDIA_JWKS_URL, {
-    headers: {
-      accept: "application/json",
-    },
-    method: "GET",
-  });
+  let upstreamResponse: Response;
+  try {
+    upstreamResponse = await fetch(NVIDIA_JWKS_URL, {
+      headers: {
+        accept: "application/json",
+      },
+      method: "GET",
+    });
+  } catch (error) {
+    return buildNvidiaProxyErrorResponse(
+      error,
+      "nvidia-jwks-proxy",
+      "NVIDIA JWKS proxy request failed",
+    );
+  }
 
   return buildNvidiaProxyResponse(upstreamResponse, "nvidia-jwks-proxy");
 }
@@ -89,6 +107,21 @@ function buildNvidiaProxyResponse(
     headers,
     status: upstreamResponse.status,
     statusText: upstreamResponse.statusText,
+  });
+}
+
+function buildNvidiaProxyErrorResponse(
+  error: unknown,
+  proxyLabel: string,
+  fallbackMessage: string,
+): Response {
+  const headers = new Headers();
+  headers.set("content-type", "text/plain; charset=utf-8");
+  headers.set("x-proxied-by", proxyLabel);
+
+  return new Response(buildProxyErrorMessage(error, fallbackMessage), {
+    headers,
+    status: 502,
   });
 }
 
@@ -138,4 +171,12 @@ function normalizeProxyHeaders(
   }
 
   return entries;
+}
+
+function buildProxyErrorMessage(error: unknown, fallbackMessage: string): string {
+  if (error instanceof Error && error.message) {
+    return `${fallbackMessage}: ${error.message}`;
+  }
+
+  return fallbackMessage;
 }

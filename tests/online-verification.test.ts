@@ -96,7 +96,7 @@ describe("online verification", () => {
             status: 200,
           });
         },
-        intelBaseUrl: "/api/intel-proxy",
+        intelBaseUrl: "/intel-proxy",
       },
       pckChain: pckValidation.chain!,
       pckExtensions: pckExtensions!,
@@ -109,7 +109,7 @@ describe("online verification", () => {
     expect(result.status).toBe("partial");
     expect(requestedUrls.length).toBeGreaterThanOrEqual(3);
     expect(
-      requestedUrls.every((url) => url.startsWith("/api/intel-proxy?url=")),
+      requestedUrls.every((url) => url.startsWith("/intel-proxy?url=")),
     ).toBe(true);
   });
 

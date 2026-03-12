@@ -1,4 +1,4 @@
-export const INTEL_PROXY_ROUTE = "/api/intel-proxy";
+export const INTEL_PROXY_ROUTE = "/intel-proxy";
 
 const ALLOWED_INTEL_ORIGINS = new Set([
   "https://api.trustedservices.intel.com",
@@ -33,12 +33,22 @@ export async function proxyIntelCollateralRequest(
     });
   }
 
-  const upstreamResponse = await fetch(targetResult.targetUrl, {
-    headers: {
-      accept: INTEL_ACCEPT_HEADER,
-    },
-    method: "GET",
-  });
+  let upstreamResponse: Response;
+  try {
+    upstreamResponse = await fetch(targetResult.targetUrl, {
+      headers: {
+        accept: INTEL_ACCEPT_HEADER,
+      },
+      method: "GET",
+    });
+  } catch (error) {
+    return new Response(buildProxyErrorMessage(error), {
+      headers: {
+        "content-type": "text/plain; charset=utf-8",
+      },
+      status: 502,
+    });
+  }
 
   const headers = new Headers();
   headers.set("x-proxied-by", "intel-collateral-proxy");
@@ -54,6 +64,14 @@ export async function proxyIntelCollateralRequest(
     headers,
     status: upstreamResponse.status,
   });
+}
+
+function buildProxyErrorMessage(error: unknown): string {
+  if (error instanceof Error && error.message) {
+    return `Intel collateral proxy request failed: ${error.message}`;
+  }
+
+  return "Intel collateral proxy request failed";
 }
 
 function parseIntelCollateralTarget(
