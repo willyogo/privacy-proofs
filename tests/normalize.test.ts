@@ -60,6 +60,23 @@ describe("parseReportSource", () => {
       result.checks.find((check) => check.id === "tdx-quote-shape")?.status,
     ).toBe("fail");
   });
+
+  it("accepts MRCONFIGID layouts that prefix the compose hash with 0x01", async () => {
+    const composeHash =
+      "39eaa3f466bb30f10e9d2be1b103b2d97d452f4d3dd15fcc9c6fb1f1023bfdba";
+    const report = buildBaseReport({
+      intel_quote: buildQuoteHex({
+        mrConfigIdHex: `01${composeHash}${"00".repeat(15)}`,
+        version: 4,
+      }),
+    });
+
+    const result = await parseReportSource(JSON.stringify(report), "mrconfigid-prefix.json");
+
+    expect(
+      result.checks.find((check) => check.id === "tdx-compose-hash")?.status,
+    ).toBe("pass");
+  });
 });
 
 function buildBaseReport(overrides: Record<string, unknown> = {}) {
@@ -149,12 +166,49 @@ function buildBaseReport(overrides: Record<string, unknown> = {}) {
   };
 }
 
-function buildQuoteHex({ version }: { version: number }) {
-  const quote = new Uint8Array(636);
+function buildQuoteHex({
+  mrConfigIdHex,
+  version,
+}: {
+  mrConfigIdHex?: string;
+  version: number;
+}) {
+  const authDataLength = 64 + 64 + 6 + 384 + 64 + 2 + 6;
+  const quote = new Uint8Array(636 + authDataLength);
   const view = new DataView(quote.buffer);
   view.setUint16(0, version, true);
-  view.setUint32(632, 0, true);
+  view.setUint32(632, authDataLength, true);
+
+  if (mrConfigIdHex) {
+    const mrConfigIdBytes = hexToBytes(mrConfigIdHex);
+    quote.set(mrConfigIdBytes, 48 + 184);
+  }
+
+  let offset = 636;
+  offset += 64; // quote signature
+  offset += 64; // attestation public key
+  view.setUint16(offset, 6, true);
+  view.setUint32(offset + 2, 456, true);
+  offset += 6;
+  offset += 384; // qe report
+  offset += 64; // qe report signature
+  view.setUint16(offset, 0, true);
+  offset += 2;
+  view.setUint16(offset, 5, true);
+  view.setUint32(offset + 2, 0, true);
+
   return Array.from(quote)
     .map((byte) => byte.toString(16).padStart(2, "0"))
     .join("");
+}
+
+function hexToBytes(value: string): Uint8Array {
+  const normalized = value.replace(/^0x/i, "");
+  const bytes = new Uint8Array(normalized.length / 2);
+
+  for (let index = 0; index < normalized.length; index += 2) {
+    bytes[index / 2] = Number.parseInt(normalized.slice(index, index + 2), 16);
+  }
+
+  return bytes;
 }

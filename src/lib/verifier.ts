@@ -456,9 +456,7 @@ function buildMeasurementChecks({
   checks.push(
     buildCheck({
       description:
-        composeHash &&
-        quote.mrConfigId.length >= 64 &&
-        quote.mrConfigId.slice(0, 64) === composeHash
+        composeHash && mrConfigIdEmbedsComposeHash(quote.mrConfigId, composeHash)
           ? "The quote MRCONFIGID embeds the reported compose hash."
           : "The quote MRCONFIGID does not embed the reported compose hash.",
       domain: "tdx",
@@ -468,9 +466,7 @@ function buildMeasurementChecks({
       severity: "blocking",
       source: "local",
       status:
-        composeHash &&
-        quote.mrConfigId.length >= 64 &&
-        quote.mrConfigId.slice(0, 64) === composeHash
+        composeHash && mrConfigIdEmbedsComposeHash(quote.mrConfigId, composeHash)
           ? "pass"
           : "fail",
     }),
@@ -1762,6 +1758,27 @@ function extractQuoteFieldBytes(
   length: number,
 ): Uint8Array {
   return bytes.slice(TDX_HEADER_LENGTH + offset, TDX_HEADER_LENGTH + offset + length);
+}
+
+function mrConfigIdEmbedsComposeHash(
+  mrConfigId: string,
+  composeHash: string,
+): boolean {
+  if (mrConfigId.length < composeHash.length) {
+    return false;
+  }
+
+  if (mrConfigId.startsWith(composeHash)) {
+    return true;
+  }
+
+  // Some Venice producers write MRCONFIGID as 0x01 || compose_hash || zero padding.
+  return (
+    mrConfigId.length >= composeHash.length + 2 &&
+    mrConfigId.startsWith("01") &&
+    mrConfigId.slice(2, 2 + composeHash.length) === composeHash &&
+    /^0*$/.test(mrConfigId.slice(2 + composeHash.length))
+  );
 }
 
 function collectNamedEventPayloads(
