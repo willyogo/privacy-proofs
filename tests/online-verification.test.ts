@@ -1,7 +1,118 @@
 import { describe, expect, it } from "vitest";
-import { completeNvidiaOnlineVerification } from "../src/lib/online-verification";
+import { validateCertificateChain } from "../src/lib/certificates";
+import { parseIntelPckExtensions, parseQeReport } from "../src/lib/intel";
+import {
+  completeIntelOnlineVerification,
+  completeNvidiaOnlineVerification,
+} from "../src/lib/online-verification";
+import { decodeTdxQuote } from "../src/lib/verifier";
+import {
+  INTEL_TDX_QE_IDENTITY,
+  INTEL_TDX_QUOTE_HEX,
+  INTEL_TDX_TCB_INFO,
+  INTEL_TDX_TCB_SIGN_CHAIN,
+} from "./fixtures/intelVendor";
 
 describe("online verification", () => {
+  it("routes Intel collateral fetches through the configured proxy URL", async () => {
+    const quote = decodeTdxQuote(INTEL_TDX_QUOTE_HEX)!;
+    const pckValidation = await validateCertificateChain({
+      bundle: quote.certificationData!,
+      bundleLabel: "Intel PCK certificate chain",
+      domain: "intel",
+      jsonPath: "$.intel_quote",
+    });
+    const pckExtensions = parseIntelPckExtensions(pckValidation.chain![0]!);
+    const qeReport = parseQeReport(quote.qeReport!);
+    const requestedUrls: string[] = [];
+
+    const result = await completeIntelOnlineVerification({
+      options: {
+        fetchImpl: async (input) => {
+          const url = String(input);
+          requestedUrls.push(url);
+
+          if (
+            url.includes(
+              encodeURIComponent(
+                "https://api.trustedservices.intel.com/tdx/certification/v4/qe/identity",
+              ),
+            )
+          ) {
+            return new Response(JSON.stringify(INTEL_TDX_QE_IDENTITY), {
+              headers: {
+                "content-type": "application/json",
+                "SGX-Enclave-Identity-Issuer-Chain": encodeURIComponent(
+                  INTEL_TDX_TCB_SIGN_CHAIN,
+                ),
+              },
+              status: 200,
+            });
+          }
+
+          if (
+            url.includes(
+              encodeURIComponent(
+                `https://api.trustedservices.intel.com/tdx/certification/v4/tcb?fmspc=${pckExtensions!.fmspc}&update=standard`,
+              ),
+            )
+          ) {
+            return new Response(JSON.stringify(INTEL_TDX_TCB_INFO), {
+              headers: {
+                "content-type": "application/json",
+                "TCB-Info-Issuer-Chain": encodeURIComponent(
+                  INTEL_TDX_TCB_SIGN_CHAIN,
+                ),
+              },
+              status: 200,
+            });
+          }
+
+          if (
+            url.includes(
+              encodeURIComponent(
+                "https://api.trustedservices.intel.com/sgx/certification/v4/pckcrl?ca=processor&encoding=pem",
+              ),
+            )
+          ) {
+            return new Response(
+              "-----BEGIN X509 CRL-----\nAQ==\n-----END X509 CRL-----\n",
+              {
+                headers: {
+                  "content-type": "application/x-pem-file",
+                  "SGX-PCK-CRL-Issuer-Chain": encodeURIComponent(
+                    quote.certificationData!,
+                  ),
+                },
+                status: 200,
+              },
+            );
+          }
+
+          return new Response(new Uint8Array([0x30, 0x03, 0x02, 0x01, 0x00]), {
+            headers: {
+              "content-type": "application/pkix-crl",
+            },
+            status: 200,
+          });
+        },
+        intelBaseUrl: "/api/intel-proxy",
+      },
+      pckChain: pckValidation.chain!,
+      pckExtensions: pckExtensions!,
+      qeReport: qeReport!,
+      quoteMrSignerSeam: quote.mrSignerSeam,
+      quoteSeamAttributes: quote.seamAttributes,
+      quoteTeeTcbSvn: quote.teeTcbSvn,
+    });
+
+    expect(result.status).toBe("partial");
+    expect(requestedUrls.length).toBeGreaterThanOrEqual(3);
+    expect(
+      requestedUrls.every((url) => url.startsWith("/api/intel-proxy?url=")),
+    ).toBe(true);
+  });
+
   it("accepts nvapi keys without the Bearer prefix and verifies NRAS JWTs", async () => {
     const apiKey = "nvapi-fixture-key";
     const nonce = "aa".repeat(32);

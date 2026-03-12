@@ -30,10 +30,12 @@ type OnlineVerificationResult = {
   status: "partial" | "verified";
 };
 
-const DEFAULT_INTEL_PCS_BASE_URL = "https://api.trustedservices.intel.com";
+const DEFAULT_INTEL_PCS_ORIGIN = "https://api.trustedservices.intel.com";
+const DEFAULT_INTEL_PCS_BASE_URL = "/api/intel-proxy";
 const DEFAULT_NVIDIA_NRAS_BASE_URL = "https://nras.attestation.nvidia.com/v4";
 const DEFAULT_NVIDIA_JWKS_URL =
   "https://nras.attestation.nvidia.com/.well-known/jwks.json";
+const INTEL_PROXY_QUERY_PARAM = "url";
 
 export async function completeIntelOnlineVerification({
   options,
@@ -106,7 +108,10 @@ export async function completeIntelOnlineVerification({
     jsonPath: "$.intel_quote",
     label: "Fetch Intel QE identity",
     parser: asIntelSignedQeIdentity,
-    url: `${baseUrl}/tdx/certification/v4/qe/identity`,
+    url: buildIntelFetchUrl(
+      baseUrl,
+      `${DEFAULT_INTEL_PCS_ORIGIN}/tdx/certification/v4/qe/identity`,
+    ),
   });
   checks.push(...qeIdentityResponse.checks);
 
@@ -117,9 +122,12 @@ export async function completeIntelOnlineVerification({
     jsonPath: "$.intel_quote",
     label: "Fetch Intel TCB info",
     parser: asIntelSignedTcbInfo,
-    url: `${baseUrl}/tdx/certification/v4/tcb?fmspc=${encodeURIComponent(
-      pckExtensions.fmspc,
-    )}&update=standard`,
+    url: buildIntelFetchUrl(
+      baseUrl,
+      `${DEFAULT_INTEL_PCS_ORIGIN}/tdx/certification/v4/tcb?fmspc=${encodeURIComponent(
+        pckExtensions.fmspc,
+      )}&update=standard`,
+    ),
   });
   checks.push(...tcbInfoResponse.checks);
 
@@ -129,9 +137,12 @@ export async function completeIntelOnlineVerification({
     id: "intel-online-pck-crl-fetch",
     jsonPath: "$.intel_quote",
     label: "Fetch Intel PCK CRL",
-    url: `${baseUrl}/sgx/certification/v4/pckcrl?ca=${encodeURIComponent(
-      caType,
-    )}&encoding=pem`,
+    url: buildIntelFetchUrl(
+      baseUrl,
+      `${DEFAULT_INTEL_PCS_ORIGIN}/sgx/certification/v4/pckcrl?ca=${encodeURIComponent(
+        caType,
+      )}&encoding=pem`,
+    ),
   });
   checks.push(...pckCrlResponse.checks);
 
@@ -227,6 +238,7 @@ export async function completeIntelOnlineVerification({
   const signingChainRevocation = await evaluateIntelSigningChainRevocation({
     certificates: tcbInfoChainResult.chain ?? [],
     fetchImpl,
+    intelBaseUrl: baseUrl,
   });
   checks.push(...signingChainRevocation.checks);
 
@@ -829,7 +841,7 @@ async function fetchIntelText({
   }
 
   const issuerChain = decodeIssuerChainHeader(response.headers.get(headerName));
-  const pemLike = response.value.includes("BEGIN X509 CRL");
+  const pemLike = /BEGIN (X509 )?CRL/u.test(response.value);
   const checks = [...response.checks];
 
   checks.push(
@@ -1046,6 +1058,81 @@ async function fetchText({
   }
 }
 
+async function fetchBytes({
+  fetchImpl,
+  id,
+  jsonPath,
+  label,
+  url,
+}: {
+  fetchImpl: typeof fetch;
+  id: string;
+  jsonPath: string;
+  label: string;
+  url: string;
+}): Promise<
+  | { checks: CheckResult[]; ok: false }
+  | { checks: CheckResult[]; headers: Headers; ok: true; value: Uint8Array }
+> {
+  try {
+    const response = await fetchImpl(url, {
+      headers: {
+        accept: "application/pkix-crl, application/x-pem-file, text/plain, */*",
+      },
+    });
+
+    const checks: CheckResult[] = [
+      buildCheck({
+        description: response.ok
+          ? `${label} completed with HTTP ${response.status}.`
+          : `${label} failed with HTTP ${response.status}.`,
+        details: [
+          buildDetail("URL", url),
+          buildDetail("HTTP status", response.status),
+        ],
+        domain: "tdx",
+        id,
+        jsonPath,
+        label,
+        severity: "advisory",
+        source: "online",
+        status: response.ok ? "pass" : "fail",
+      }),
+    ];
+
+    if (!response.ok) {
+      return { checks, ok: false };
+    }
+
+    return {
+      checks,
+      headers: response.headers,
+      ok: true,
+      value: new Uint8Array(await response.arrayBuffer()),
+    };
+  } catch (error) {
+    return {
+      checks: [
+        buildCheck({
+          description:
+            error instanceof Error
+              ? `${label} could not be fetched: ${error.message}`
+              : `${label} could not be fetched.`,
+          details: [buildDetail("URL", url)],
+          domain: "tdx",
+          id,
+          jsonPath,
+          label,
+          severity: "advisory",
+          source: "online",
+          status: "fail",
+        }),
+      ],
+      ok: false,
+    };
+  }
+}
+
 async function verifyIntelPckCrl({
   crlPem,
   issuerChain,
@@ -1179,9 +1266,11 @@ async function verifyIntelPckCrl({
 async function evaluateIntelSigningChainRevocation({
   certificates,
   fetchImpl,
+  intelBaseUrl,
 }: {
   certificates: X509Certificate[];
   fetchImpl: typeof fetch;
+  intelBaseUrl: string;
 }): Promise<{
   checks: CheckResult[];
   complete: boolean;
@@ -1217,6 +1306,7 @@ async function evaluateIntelSigningChainRevocation({
 
     const crlFetchResult = await fetchFirstCrl({
       fetchImpl,
+      intelBaseUrl,
       label: "Fetch Intel signing certificate CRL",
       urls: crlUrls,
     });
@@ -1232,7 +1322,7 @@ async function evaluateIntelSigningChainRevocation({
 
     let crl: X509Crl;
     try {
-      crl = new X509Crl(crlFetchResult.pem);
+      crl = parseIntelCrl(crlFetchResult.body);
     } catch (error) {
       complete = false;
       checks.push(
@@ -1332,25 +1422,27 @@ async function evaluateIntelSigningChainRevocation({
 
 async function fetchFirstCrl({
   fetchImpl,
+  intelBaseUrl,
   label,
   urls,
 }: {
   fetchImpl: typeof fetch;
+  intelBaseUrl: string;
   label: string;
   urls: string[];
 }): Promise<
   | { checks: CheckResult[]; ok: false }
-  | { checks: CheckResult[]; ok: true; pem: string }
+  | { body: Uint8Array; checks: CheckResult[]; ok: true }
 > {
   const checks: CheckResult[] = [];
 
   for (const url of urls) {
-    const result = await fetchText({
+    const result = await fetchBytes({
       fetchImpl,
       id: "intel-online-generic-crl-fetch",
       jsonPath: "$.intel_quote",
       label,
-      url,
+      url: buildIntelFetchUrl(intelBaseUrl, url),
     });
     checks.push(...result.checks);
 
@@ -1358,10 +1450,26 @@ async function fetchFirstCrl({
       continue;
     }
 
+    checks.push(
+      buildCheck({
+        description:
+          detectIntelCrlEncoding(result.value) === "pem"
+            ? `${label} returned a PEM-encoded CRL.`
+            : `${label} returned a binary DER CRL.`,
+        domain: "tdx",
+        id: "intel-online-generic-crl-fetch-shape",
+        jsonPath: "$.intel_quote",
+        label: `Inspect ${label.toLowerCase()} payload`,
+        severity: "advisory",
+        source: "online",
+        status: "pass",
+      }),
+    );
+
     return {
+      body: result.value,
       checks,
       ok: true,
-      pem: result.value,
     };
   }
 
@@ -1940,6 +2048,25 @@ function decodeIssuerChainHeader(value: string | null): string | undefined {
   }
 }
 
+function buildIntelFetchUrl(baseUrl: string, targetUrl: string): string {
+  const normalizedBaseUrl = normalizeBaseUrl(baseUrl);
+  const normalizedTargetUrl = isAbsoluteUrl(targetUrl)
+    ? targetUrl
+    : new URL(targetUrl, DEFAULT_INTEL_PCS_ORIGIN).toString();
+
+  if (shouldProxyIntelRequests(normalizedBaseUrl)) {
+    return `${normalizedBaseUrl}?${INTEL_PROXY_QUERY_PARAM}=${encodeURIComponent(
+      normalizedTargetUrl,
+    )}`;
+  }
+
+  if (isAbsoluteUrl(targetUrl)) {
+    return normalizedTargetUrl;
+  }
+
+  return `${normalizedBaseUrl}${targetUrl.startsWith("/") ? targetUrl : `/${targetUrl}`}`;
+}
+
 function resolveFetch(
   value?: typeof fetch,
 ): typeof fetch | undefined {
@@ -1952,6 +2079,56 @@ function resolveFetch(
 
 function normalizeBaseUrl(value: string): string {
   return value.replace(/\/+$/, "");
+}
+
+function shouldProxyIntelRequests(value: string): boolean {
+  if (!isAbsoluteUrl(value)) {
+    return true;
+  }
+
+  try {
+    return new URL(value).hostname !== new URL(DEFAULT_INTEL_PCS_ORIGIN).hostname;
+  } catch {
+    return true;
+  }
+}
+
+function isAbsoluteUrl(value: string): boolean {
+  try {
+    new URL(value);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function detectIntelCrlEncoding(value: Uint8Array): "der" | "pem" {
+  const decoded = tryDecodeUtf8(value)?.trimStart() ?? "";
+  return /-----BEGIN (X509 )?CRL-----/u.test(decoded) ? "pem" : "der";
+}
+
+function parseIntelCrl(value: Uint8Array): X509Crl {
+  const decoded = tryDecodeUtf8(value)?.trim();
+  if (decoded && /-----BEGIN (X509 )?CRL-----/u.test(decoded)) {
+    return new X509Crl(decoded);
+  }
+
+  return new X509Crl(toArrayBuffer(value));
+}
+
+function tryDecodeUtf8(value: Uint8Array): string | undefined {
+  try {
+    return new TextDecoder().decode(value);
+  } catch {
+    return undefined;
+  }
+}
+
+function toArrayBuffer(value: Uint8Array): ArrayBuffer {
+  return value.buffer.slice(
+    value.byteOffset,
+    value.byteOffset + value.byteLength,
+  ) as ArrayBuffer;
 }
 
 function normalizeHex(value: unknown): string | undefined {

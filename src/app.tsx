@@ -38,7 +38,9 @@ export default function App() {
       online:
         mode === "online"
           ? {
-              intelBaseUrl: sanitizeEnvValue(runtimeEnv?.VITE_INTEL_PCS_BASE_URL),
+              intelBaseUrl:
+                sanitizeEnvValue(runtimeEnv?.VITE_INTEL_PCS_BASE_URL) ??
+                "/api/intel-proxy",
               nvidiaApiKey:
                 sanitizeEnvValue(nvidiaApiKey) ??
                 sanitizeEnvValue(runtimeEnv?.VITE_NVIDIA_NRAS_API_KEY),

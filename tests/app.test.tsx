@@ -125,7 +125,7 @@ describe("App", () => {
     expect(parseReportSource).toHaveBeenCalledWith('{"report":true}', undefined, {
       mode: "online",
       online: {
-        intelBaseUrl: undefined,
+        intelBaseUrl: "/api/intel-proxy",
         nvidiaApiKey: "fixture-api-key",
         nvidiaBaseUrl: "https://nras.attestation.nvidia.com/v4",
         nvidiaJwksUrl: "https://nras.attestation.nvidia.com/.well-known/jwks.json",
