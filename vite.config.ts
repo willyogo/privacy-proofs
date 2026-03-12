@@ -1,4 +1,5 @@
 import {
+  type Connect,
   defineConfig,
   type Plugin,
   type PreviewServer,
@@ -32,12 +33,10 @@ type ProxyResponse = {
 };
 
 function intelCollateralProxyPlugin(): Plugin {
-  const handleRequest = async (
-    req: ProxyRequest,
-    res: ProxyResponse,
-    next: (error?: unknown) => void,
-  ) => {
-    const requestUrl = new URL(req.url ?? "/", "http://127.0.0.1");
+  const handleRequest: Connect.NextHandleFunction = async (req, res, next) => {
+    const proxyReq = req as unknown as ProxyRequest;
+    const proxyRes = res as unknown as ProxyResponse;
+    const requestUrl = new URL(proxyReq.url ?? "/", "http://127.0.0.1");
     if (
       requestUrl.pathname !== INTEL_PROXY_ROUTE &&
       requestUrl.pathname !== NVIDIA_ATTEST_ROUTE &&
@@ -49,12 +48,12 @@ function intelCollateralProxyPlugin(): Plugin {
 
     if (
       requestUrl.pathname === INTEL_PROXY_ROUTE &&
-      req.method &&
-      req.method !== "GET"
+      proxyReq.method &&
+      proxyReq.method !== "GET"
     ) {
-      res.statusCode = 405;
-      res.setHeader("content-type", "text/plain; charset=utf-8");
-      res.end("Method Not Allowed");
+      proxyRes.statusCode = 405;
+      proxyRes.setHeader("content-type", "text/plain; charset=utf-8");
+      proxyRes.end("Method Not Allowed");
       return;
     }
 
@@ -64,21 +63,21 @@ function intelCollateralProxyPlugin(): Plugin {
           ? await proxyIntelCollateralRequest(requestUrl.searchParams.get("url"))
           : requestUrl.pathname === NVIDIA_ATTEST_ROUTE
             ? await proxyNvidiaAttestationRequest({
-                body: await readRequestBody(req),
-                headers: req.headers,
-                method: req.method,
+                body: await readRequestBody(proxyReq),
+                headers: proxyReq.headers,
+                method: proxyReq.method,
               })
             : await proxyNvidiaJwksRequest();
 
-      res.statusCode = upstreamResponse.status;
+      proxyRes.statusCode = upstreamResponse.status;
       upstreamResponse.headers.forEach((headerValue, headerName) => {
         if (headerValue) {
-          res.setHeader(headerName, headerValue);
+          proxyRes.setHeader(headerName, headerValue);
         }
       });
 
       const body = new Uint8Array(await upstreamResponse.arrayBuffer());
-      res.end(body);
+      proxyRes.end(body);
     } catch (error) {
       next(error);
     }
@@ -86,22 +85,10 @@ function intelCollateralProxyPlugin(): Plugin {
 
   return {
     configurePreviewServer(server: PreviewServer) {
-      server.middlewares.use(
-        handleRequest as (
-          req: { method?: string; url?: string },
-          res: ProxyResponse,
-          next: (error?: unknown) => void,
-        ) => void | Promise<void>,
-      );
+      server.middlewares.use(handleRequest);
     },
     configureServer(server: ViteDevServer) {
-      server.middlewares.use(
-        handleRequest as (
-          req: { method?: string; url?: string },
-          res: ProxyResponse,
-          next: (error?: unknown) => void,
-        ) => void | Promise<void>,
-      );
+      server.middlewares.use(handleRequest);
     },
     name: "intel-collateral-proxy",
   };
