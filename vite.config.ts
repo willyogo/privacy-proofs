@@ -1,22 +1,9 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
-
-const INTEL_PROXY_ROUTE = "/api/intel-proxy";
-const ALLOWED_INTEL_ORIGINS = new Set([
-  "https://api.trustedservices.intel.com",
-  "https://certificates.trustedservices.intel.com",
-]);
-const FORWARDED_RESPONSE_HEADERS = [
-  "cache-control",
-  "content-length",
-  "content-type",
-  "etag",
-  "expires",
-  "last-modified",
-  "sgx-enclave-identity-issuer-chain",
-  "sgx-pck-crl-issuer-chain",
-  "tcb-info-issuer-chain",
-];
+import {
+  INTEL_PROXY_ROUTE,
+  proxyIntelCollateralRequest,
+} from "./src/lib/intel-collateral-proxy";
 
 function intelCollateralProxyPlugin() {
   const handleRequest = async (
@@ -41,52 +28,17 @@ function intelCollateralProxyPlugin() {
       return;
     }
 
-    const rawTarget = requestUrl.searchParams.get("url");
-    if (!rawTarget) {
-      res.statusCode = 400;
-      res.setHeader("content-type", "text/plain; charset=utf-8");
-      res.end("Missing Intel collateral URL");
-      return;
-    }
-
-    let targetUrl: URL;
     try {
-      targetUrl = new URL(rawTarget);
-    } catch {
-      res.statusCode = 400;
-      res.setHeader("content-type", "text/plain; charset=utf-8");
-      res.end("Invalid Intel collateral URL");
-      return;
-    }
-
-    if (
-      targetUrl.protocol !== "https:" ||
-      !ALLOWED_INTEL_ORIGINS.has(targetUrl.origin)
-    ) {
-      res.statusCode = 403;
-      res.setHeader("content-type", "text/plain; charset=utf-8");
-      res.end("Blocked Intel collateral host");
-      return;
-    }
-
-    try {
-      const upstreamResponse = await fetch(targetUrl, {
-        headers: {
-          accept:
-            "application/json, application/x-pem-file, application/pkix-crl, text/plain;q=0.9, */*;q=0.1",
-        },
-        method: "GET",
-      });
+      const upstreamResponse = await proxyIntelCollateralRequest(
+        requestUrl.searchParams.get("url"),
+      );
 
       res.statusCode = upstreamResponse.status;
-      res.setHeader("x-proxied-by", "vite-intel-collateral-proxy");
-
-      for (const headerName of FORWARDED_RESPONSE_HEADERS) {
-        const headerValue = upstreamResponse.headers.get(headerName);
+      upstreamResponse.headers.forEach((headerValue, headerName) => {
         if (headerValue) {
           res.setHeader(headerName, headerValue);
         }
-      }
+      });
 
       const body = new Uint8Array(await upstreamResponse.arrayBuffer());
       res.end(body);
