@@ -1,6 +1,7 @@
 import JsonDropzone from "./JsonDropzone";
 
 type InputPanelProps = {
+  className?: string;
   collateralFileName?: string;
   collateralInput: string;
   fileName?: string;
@@ -12,6 +13,7 @@ type InputPanelProps = {
 };
 
 export default function InputPanel({
+  className,
   collateralFileName,
   collateralInput,
   fileName,
@@ -22,7 +24,7 @@ export default function InputPanel({
   rawInput,
 }: InputPanelProps) {
   return (
-    <section className="panel">
+    <section className={className ? `panel ${className}` : "panel"}>
       <div className="panel-header">
         <div>
           <p className="panel-kicker">Input</p>

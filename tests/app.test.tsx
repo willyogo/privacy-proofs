@@ -51,4 +51,20 @@ describe("App", () => {
 
     await waitFor(() => expect(parseReportSource).toHaveBeenCalledTimes(1));
   });
+
+  it("renders the polished section headings in the expected order", async () => {
+    const { default: App } = await import("../src/app");
+    render(<App />);
+
+    const headings = screen.getAllByRole("heading", { level: 2 }).map((heading) => {
+      return heading.textContent;
+    });
+
+    expect(headings).toEqual([
+      "Load a report and verify",
+      "Ready to Verify",
+      "Current Checks",
+      "Decoded Overview",
+    ]);
+  });
 });

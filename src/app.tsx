@@ -74,30 +74,31 @@ export default function App() {
       </header>
 
       <main className="page-grid">
-        <section className="panel-stack">
-          <VerdictCard
-            fileName={fileName}
-            result={result}
-          />
-          <AdvancedPanel result={result} />
-          <InputPanel
-            collateralFileName={collateralFileName}
-            collateralInput={collateralInput}
-            fileName={fileName}
-            isVerifying={isVerifying}
-            onCollateralInputChange={handleCollateralInputChange}
-            onInputChange={handleReportInputChange}
-            onVerify={handleVerify}
-            rawInput={rawInput}
-          />
-        </section>
-
-        <section className="panel-stack">
-          <CheckList
-            checks={result.checks}
-            verification={result.verification}
-          />
-        </section>
+        <InputPanel
+          className="page-section-input"
+          collateralFileName={collateralFileName}
+          collateralInput={collateralInput}
+          fileName={fileName}
+          isVerifying={isVerifying}
+          onCollateralInputChange={handleCollateralInputChange}
+          onInputChange={handleReportInputChange}
+          onVerify={handleVerify}
+          rawInput={rawInput}
+        />
+        <VerdictCard
+          className="page-section-verdict"
+          fileName={fileName}
+          result={result}
+        />
+        <CheckList
+          checks={result.checks}
+          className="page-section-checks"
+          verification={result.verification}
+        />
+        <AdvancedPanel
+          className="page-section-overview"
+          result={result}
+        />
       </main>
     </div>
   );

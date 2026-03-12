@@ -1,6 +1,7 @@
 import type { ParseResult } from "../lib/types";
 
 type VerdictCardProps = {
+  className?: string;
   fileName?: string;
   result: ParseResult;
 };
@@ -12,11 +13,17 @@ const toneByStatus = {
   invalid: "danger",
 } as const;
 
-export default function VerdictCard({ fileName, result }: VerdictCardProps) {
+export default function VerdictCard({
+  className,
+  fileName,
+  result,
+}: VerdictCardProps) {
   const tone = toneByStatus[result.verification.status];
 
   return (
-    <section className={`panel verdict-card verdict-${tone}`}>
+    <section
+      className={`panel verdict-card verdict-${tone}${className ? ` ${className}` : ""}`}
+    >
       <div className="verdict-row">
         <span className="status-pill">{result.verification.badge}</span>
         <span className="milestone-pill">{result.verification.engineLabel}</span>

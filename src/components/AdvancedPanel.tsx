@@ -1,16 +1,20 @@
 import type { ParseResult } from "../lib/types";
 
 type AdvancedPanelProps = {
+  className?: string;
   result: ParseResult;
 };
 
-export default function AdvancedPanel({ result }: AdvancedPanelProps) {
+export default function AdvancedPanel({
+  className,
+  result,
+}: AdvancedPanelProps) {
   return (
-    <section className="panel">
+    <section className={className ? `panel ${className}` : "panel"}>
       <div className="panel-header">
         <div>
           <p className="panel-kicker">Advanced</p>
-          <h2>Decoded overview</h2>
+          <h2>Decoded Overview</h2>
         </div>
       </div>
 

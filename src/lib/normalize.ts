@@ -26,7 +26,7 @@ export function createIdleParseResult(): ParseResult {
       },
       engineLabel: "Engine ready",
       failedChecks: 0,
-      headline: "Ready to verify",
+      headline: "Ready to Verify",
       infoChecks: 0,
       mode: "offline",
       passedChecks: 0,

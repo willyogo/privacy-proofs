@@ -24,22 +24,26 @@
   position: relative;
   z-index: 1;
   display: grid;
-  justify-items: start;
   gap: 18px;
-  margin-bottom: 28px;
+  width: 100%;
+  max-width: 1240px;
+  margin: 0 auto 28px;
 }
 
 .brand-logo {
   width: min(154px, 24vw);
   height: auto;
   flex-shrink: 0;
+  justify-self: start;
   filter: drop-shadow(0 14px 28px rgba(216, 181, 122, 0.16));
 }
 
 .hero-block {
   display: grid;
   gap: 14px;
-  max-width: 720px;
+  width: min(100%, 920px);
+  justify-self: center;
+  text-align: center;
 }
 
 .eyebrow,
@@ -69,17 +73,14 @@
 
 .hero-copy {
   margin: 0;
+  max-width: 82ch;
+  margin-inline: auto;
   font-size: 1.05rem;
   line-height: 1.8;
   color: var(--text-soft);
 }
 
 .page-grid {
-  display: grid;
-  gap: 24px;
-}
-
-.panel-stack {
   display: grid;
   gap: 24px;
 }
@@ -551,6 +552,19 @@
   .page-grid {
     grid-template-columns: minmax(0, 1.15fr) minmax(360px, 0.85fr);
     align-items: start;
+  }
+
+  .page-section-input {
+    grid-column: 1;
+  }
+
+  .page-section-verdict {
+    grid-column: 2;
+  }
+
+  .page-section-checks,
+  .page-section-overview {
+    grid-column: 1 / -1;
   }
 
   .summary-grid,

@@ -3,11 +3,13 @@ import type { VerificationSummary } from "../lib/types";
 
 type CheckListProps = {
   checks: CheckResult[];
+  className?: string;
   verification: VerificationSummary;
 };
 
 export default function CheckList({
   checks,
+  className,
   verification,
 }: CheckListProps) {
   const summaryText =
@@ -16,11 +18,11 @@ export default function CheckList({
       : "No checks yet";
 
   return (
-    <section className="panel">
+    <section className={className ? `panel ${className}` : "panel"}>
       <div className="panel-header">
         <div>
           <p className="panel-kicker">Diagnostics</p>
-          <h2>Current checks</h2>
+          <h2>Current Checks</h2>
         </div>
         <span className={`panel-chip panel-chip-${verification.status}`}>
           {summaryText}
