@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { parseReportSource } from "../src/lib/normalize";
 
 const BASE_SIGNING_PUBLIC_KEY =
@@ -15,6 +15,10 @@ const KEY_PROVIDER_INFO_HEX = Array.from(new TextEncoder().encode(KEY_PROVIDER_I
   .join("");
 
 describe("parseReportSource", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
   it("returns an error for invalid JSON", async () => {
     const result = await parseReportSource("{broken");
 
@@ -76,6 +80,15 @@ describe("parseReportSource", () => {
     expect(
       result.checks.find((check) => check.id === "tdx-compose-hash")?.status,
     ).toBe("pass");
+  });
+
+  it("never invokes fetch while verifying a raw report", async () => {
+    const fetchSpy = vi.fn();
+    vi.stubGlobal("fetch", fetchSpy);
+
+    await parseReportSource(JSON.stringify(buildBaseReport()), "fixture.json");
+
+    expect(fetchSpy).not.toHaveBeenCalled();
   });
 });
 

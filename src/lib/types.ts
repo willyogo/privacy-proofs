@@ -8,13 +8,6 @@ export type VerificationStatus =
 
 export type VerificationMode = "offline" | "online";
 
-export type CollateralStatus =
-  | "not-requested"
-  | "provided"
-  | "fetched"
-  | "missing"
-  | "fetch-failed";
-
 export type CryptographicVerificationStatus =
   | "verified"
   | "partial"
@@ -175,24 +168,6 @@ export type NormalizedAttestationReport = {
   [key: string]: unknown;
 };
 
-export type CollateralBundle = {
-  intel?: {
-    intermediateCaCrl?: string;
-    pckCrl?: string;
-    qeIdentity?: IntelSignedQeIdentity;
-    rootCaCrl?: string;
-    tcbInfo?: IntelSignedTcbInfo;
-    tcbSignChain?: string;
-    [key: string]: unknown;
-  };
-  nvidia?: {
-    certBundle?: string;
-    crls?: string[];
-    [key: string]: unknown;
-  };
-  [key: string]: unknown;
-};
-
 export type NormalizationError = {
   message: string;
   path: string;
@@ -200,7 +175,6 @@ export type NormalizationError = {
 
 export type VerificationSummary = {
   badge: string;
-  collateralStatus: CollateralStatus;
   cryptographicStatus: CryptographicVerificationStatus;
   description: string;
   evidenceStatus: {
@@ -220,7 +194,6 @@ export type VerificationSummary = {
 
 export type ReportSummary = {
   appName?: string;
-  collateralFileName?: string;
   composeHash?: string;
   derivedSigningAddress?: string;
   eventLogCount?: number;

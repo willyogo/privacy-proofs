@@ -62,11 +62,7 @@ export default function AdvancedPanel({
               <dd>{result.summary.quoteReportData ?? "Unavailable"}</dd>
             </div>
             <div>
-              <dt>Collateral file</dt>
-              <dd>{result.summary.collateralFileName ?? "Unavailable"}</dd>
-            </div>
-            <div>
-              <dt>Embedded verified at</dt>
+              <dt>Embedded Venice/NRAS verified at</dt>
               <dd>{result.summary.verifiedAt ?? "Unavailable"}</dd>
             </div>
           </dl>

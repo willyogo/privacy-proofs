@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const verifyNormalizedReport = vi.fn();
 
@@ -11,12 +11,16 @@ describe("verdict construction", () => {
     verifyNormalizedReport.mockReset();
   });
 
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
   it("does not upgrade to verified when embedded claims are present but crypto is partial", async () => {
     verifyNormalizedReport.mockResolvedValue({
       checks: [
         {
           description: "embedded claims were present",
-          domain: "collateral",
+          domain: "provenance",
           id: "embedded-verification-claims",
           jsonPath: "$.server_verification",
           label: "Inspect embedded verification claims",
@@ -25,10 +29,13 @@ describe("verdict construction", () => {
           status: "pass",
         },
       ],
-      collateralStatus: "missing",
       cryptographicStatus: "partial",
       derivedSigningAddress: "0x4B19f7f8Fd7757AAb29a8990bb11f6aA3572C9B1",
       mode: "offline",
+      evidenceStatus: {
+        intel: "partial",
+        nvidia: "verified",
+      },
       quoteReportData: undefined,
       verifiedAt: "2026-03-11T15:42:20.617Z",
     });

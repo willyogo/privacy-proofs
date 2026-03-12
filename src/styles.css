@@ -31,10 +31,10 @@
 }
 
 .brand-logo {
-  width: min(154px, 24vw);
+  width: min(124px, 18vw);
   height: auto;
   flex-shrink: 0;
-  justify-self: start;
+  justify-self: center;
   filter: drop-shadow(0 14px 28px rgba(216, 181, 122, 0.16));
 }
 
@@ -587,6 +587,6 @@
   }
 
   .brand-logo {
-    width: 118px;
+    width: 96px;
   }
 }

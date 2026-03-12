@@ -9,10 +9,6 @@ import type { ParseResult } from "./lib/types";
 export default function App() {
   const [rawInput, setRawInput] = useState("");
   const [fileName, setFileName] = useState<string | undefined>(undefined);
-  const [collateralInput, setCollateralInput] = useState("");
-  const [collateralFileName, setCollateralFileName] = useState<string | undefined>(
-    undefined,
-  );
   const [result, setResult] = useState<ParseResult>(createIdleParseResult());
   const [isVerifying, setIsVerifying] = useState(false);
   const [, startTransition] = useTransition();
@@ -27,22 +23,12 @@ export default function App() {
     }
   }
 
-  function handleCollateralInputChange(nextValue: string, nextFileName?: string) {
-    setCollateralInput(nextValue);
-    setCollateralFileName(nextFileName);
-  }
-
   async function handleVerify() {
     const requestId = requestIdRef.current + 1;
     requestIdRef.current = requestId;
     setIsVerifying(true);
 
-    const nextResult = await parseReportSource(
-      rawInput,
-      fileName,
-      collateralInput,
-      collateralFileName,
-    );
+    const nextResult = await parseReportSource(rawInput, fileName);
 
     if (requestId !== requestIdRef.current) {
       return;
@@ -76,11 +62,8 @@ export default function App() {
       <main className="page-grid">
         <InputPanel
           className="page-section-input"
-          collateralFileName={collateralFileName}
-          collateralInput={collateralInput}
           fileName={fileName}
           isVerifying={isVerifying}
-          onCollateralInputChange={handleCollateralInputChange}
           onInputChange={handleReportInputChange}
           onVerify={handleVerify}
           rawInput={rawInput}

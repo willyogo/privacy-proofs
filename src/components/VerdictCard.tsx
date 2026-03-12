@@ -67,11 +67,7 @@ export default function VerdictCard({
             <dd>{result.verification.cryptographicStatus}</dd>
           </div>
           <div>
-            <dt>Collateral</dt>
-            <dd>{result.verification.collateralStatus}</dd>
-          </div>
-          <div>
-            <dt>Verified at</dt>
+            <dt>Embedded Venice/NRAS verified at</dt>
             <dd>{summary.verifiedAt ?? "Not embedded"}</dd>
           </div>
         </dl>

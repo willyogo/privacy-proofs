@@ -1,6 +1,5 @@
 import { z } from "zod";
 import type {
-  CollateralBundle,
   EventLogEntry,
   InfoBlock,
   IntelSignedQeIdentity,
@@ -250,29 +249,6 @@ export const normalizedAttestationReportSchema = z
         : report.nvidia_payload,
   }));
 
-export const collateralBundleSchema = z
-  .object({
-    intel: z
-      .object({
-        intermediateCaCrl: z.string().optional(),
-        pckCrl: z.string().optional(),
-        qeIdentity: intelSignedQeIdentitySchema.optional(),
-        rootCaCrl: z.string().optional(),
-        tcbInfo: intelSignedTcbInfoSchema.optional(),
-        tcbSignChain: z.string().optional(),
-      })
-      .passthrough()
-      .optional(),
-    nvidia: z
-      .object({
-        certBundle: z.string().optional(),
-        crls: z.array(z.string()).optional(),
-      })
-      .passthrough()
-      .optional(),
-  })
-  .passthrough();
-
 export function parseAttestationReport(
   value: unknown,
 ):
@@ -284,30 +260,6 @@ export function parseAttestationReport(
     return {
       ok: true,
       value: result.data as NormalizedAttestationReport,
-    };
-  }
-
-  return {
-    ok: false,
-    errors: mapZodIssues(result.error.issues),
-  };
-}
-
-export function parseCollateralBundle(
-  value: unknown,
-):
-  | { ok: true; value?: CollateralBundle }
-  | { errors: NormalizationError[]; ok: false } {
-  if (value === undefined || value === null || value === "") {
-    return { ok: true, value: undefined };
-  }
-
-  const result = collateralBundleSchema.safeParse(value);
-
-  if (result.success) {
-    return {
-      ok: true,
-      value: result.data as CollateralBundle,
     };
   }
 

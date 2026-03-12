@@ -2,11 +2,8 @@ import JsonDropzone from "./JsonDropzone";
 
 type InputPanelProps = {
   className?: string;
-  collateralFileName?: string;
-  collateralInput: string;
   fileName?: string;
   isVerifying: boolean;
-  onCollateralInputChange: (nextValue: string, fileName?: string) => void;
   onInputChange: (nextValue: string, fileName?: string) => void;
   onVerify: () => void;
   rawInput: string;
@@ -14,11 +11,8 @@ type InputPanelProps = {
 
 export default function InputPanel({
   className,
-  collateralFileName,
-  collateralInput,
   fileName,
   isVerifying,
-  onCollateralInputChange,
   onInputChange,
   onVerify,
   rawInput,
@@ -56,29 +50,6 @@ export default function InputPanel({
         value={rawInput}
       />
 
-      <JsonDropzone
-        helperText="or click to choose an optional collateral bundle from disk"
-        kicker="Collateral"
-        onFileLoaded={onCollateralInputChange}
-        title="Drop a collateral JSON bundle here"
-      />
-
-      <label
-        className="textarea-label"
-        htmlFor="collateral-json"
-      >
-        Optional collateral bundle JSON
-      </label>
-      <textarea
-        id="collateral-json"
-        className="json-textarea"
-        onChange={(event) => onCollateralInputChange(event.target.value)}
-        placeholder="Paste optional collateral JSON here"
-        rows={2}
-        spellCheck={false}
-        value={collateralInput}
-      />
-
       <div className="input-actions">
         <button
           className="verify-button"
@@ -90,20 +61,14 @@ export default function InputPanel({
         </button>
         <div className="input-files">
           <span>{fileName ? `Report: ${fileName}` : "Report: pasted text"}</span>
-          <span>
-            {collateralFileName
-              ? `Collateral: ${collateralFileName}`
-              : "Collateral: none"}
-          </span>
         </div>
       </div>
 
       <p className="panel-note">
         The current engine performs typed normalization, local bindings,
-        certificate-chain validation, Intel quote signature checks, and
-        advisory inspection of embedded claims. Missing collateral or
-        unsupported raw-evidence formats keep the result in a partial state
-        instead of upgrading it to verified.
+        certificate-chain validation, Intel and NVIDIA cryptographic checks,
+        and advisory inspection of embedded Venice or NRAS provenance already
+        present in the raw report.
       </p>
     </section>
   );

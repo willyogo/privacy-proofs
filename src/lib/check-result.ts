@@ -1,6 +1,6 @@
 export type CheckStatus = "pass" | "fail" | "info";
 
-export type CheckSource = "local" | "embedded" | "online-collateral";
+export type CheckSource = "local" | "embedded";
 
 export type CheckSeverity = "blocking" | "advisory";
 
@@ -11,7 +11,7 @@ export type EvidenceDomain =
   | "tdx"
   | "nvidia"
   | "event-log"
-  | "collateral";
+  | "provenance";
 
 export type CheckResult = {
   description: string;

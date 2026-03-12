@@ -30,7 +30,6 @@ describe("App", () => {
       },
       verification: {
         badge: "Partially verified",
-        collateralStatus: "missing",
         cryptographicStatus: "partial",
         description: "fixture result",
         engineLabel: "Engine active",
@@ -83,12 +82,10 @@ describe("App", () => {
     const reportTextarea = screen.getByLabelText(
       "Raw attestation JSON",
     ) as HTMLTextAreaElement;
-    const collateralTextarea = screen.getByLabelText(
-      "Optional collateral bundle JSON",
-    ) as HTMLTextAreaElement;
 
     expect(reportTextarea.rows).toBe(2);
-    expect(collateralTextarea.rows).toBe(2);
+    expect(screen.queryByText("Collateral")).toBeNull();
+    expect(screen.queryByLabelText("Optional collateral bundle JSON")).toBeNull();
     expect(screen.queryByText("Source")).toBeNull();
     expect(screen.queryByText("fixture-model")).toBeNull();
 

@@ -1,10 +1,6 @@
 import type { CheckResult } from "./check-result";
-import {
-  parseAttestationReport,
-  parseCollateralBundle,
-} from "./schema";
+import { parseAttestationReport } from "./schema";
 import type {
-  CollateralBundle,
   ParseResult,
   ReportSummary,
   VerificationSummary,
@@ -16,7 +12,6 @@ export function createIdleParseResult(): ParseResult {
     checks: [],
     verification: {
       badge: "Awaiting input",
-      collateralStatus: "not-requested",
       cryptographicStatus: "unsupported",
       description:
         "Paste or upload an attestation report, then run the browser-side verifier.",
@@ -39,8 +34,6 @@ export function createIdleParseResult(): ParseResult {
 export async function parseReportSource(
   source: string,
   fileName?: string,
-  collateralSource?: string,
-  collateralFileName?: string,
 ): Promise<ParseResult> {
   if (source.trim().length === 0) {
     return createIdleParseResult();
@@ -69,67 +62,6 @@ export async function parseReportSource(
     });
   }
 
-  const collateralChecks: CheckResult[] = [];
-  let collateralBundle: CollateralBundle | undefined;
-
-  if (collateralSource?.trim()) {
-    let parsedCollateral: unknown;
-
-    try {
-      parsedCollateral = JSON.parse(collateralSource);
-    } catch (error) {
-      collateralChecks.push(
-        buildCheck({
-          description:
-            error instanceof Error
-              ? `The optional collateral bundle is not valid JSON: ${error.message}`
-              : "The optional collateral bundle is not valid JSON.",
-          domain: "collateral",
-          id: "collateral-json-parse",
-          jsonPath: "$",
-          label: "Parse collateral bundle",
-          severity: "advisory",
-          source: "local",
-          status: "fail",
-        }),
-      );
-    }
-
-    if (parsedCollateral !== undefined) {
-      const parsedBundle = parseCollateralBundle(parsedCollateral);
-      if (parsedBundle.ok) {
-        collateralBundle = parsedBundle.value;
-        collateralChecks.push(
-          buildCheck({
-            description: "The optional collateral bundle decoded successfully.",
-            domain: "collateral",
-            id: "collateral-json-parse",
-            jsonPath: "$",
-            label: "Parse collateral bundle",
-            severity: "advisory",
-            source: "local",
-            status: "pass",
-          }),
-        );
-      } else {
-        collateralChecks.push(
-          ...parsedBundle.errors.map((error, index) =>
-            buildCheck({
-              description: error.message,
-              domain: "collateral",
-              id: `collateral-schema-${index}`,
-              jsonPath: error.path,
-              label: "Validate collateral bundle schema",
-              severity: "advisory",
-              source: "local",
-              status: "fail",
-            }),
-          ),
-        );
-      }
-    }
-  }
-
   const normalized = parseAttestationReport(parsed);
 
   if (!normalized.ok) {
@@ -145,7 +77,6 @@ export async function parseReportSource(
           source: "local",
           status: "pass",
         }),
-        ...collateralChecks,
         ...normalized.errors.map((error, index) =>
           buildCheck({
             description: error.message,
@@ -187,21 +118,14 @@ export async function parseReportSource(
       source: "local",
       status: "pass",
     }),
-    ...collateralChecks,
   ];
 
   const { verifyNormalizedReport } = await import("./verifier");
-  const verificationAnalysis = await verifyNormalizedReport(report, collateralBundle);
+  const verificationAnalysis = await verifyNormalizedReport(report);
   checks.push(...verificationAnalysis.checks);
-  const summary = buildSummary(
-    report,
-    fileName,
-    collateralFileName,
-    verificationAnalysis,
-  );
+  const summary = buildSummary(report, fileName, verificationAnalysis);
   const verification = buildVerificationSummary({
     checks,
-    collateralStatus: verificationAnalysis.collateralStatus,
     cryptographicStatus: verificationAnalysis.cryptographicStatus,
     evidenceStatus: verificationAnalysis.evidenceStatus,
     mode: verificationAnalysis.mode,
@@ -224,7 +148,6 @@ export async function parseReportSource(
 function buildSummary(
   report: ParseResult["normalizedReport"],
   fileName?: string,
-  collateralFileName?: string,
   verificationAnalysis?: {
     derivedSigningAddress?: string;
     quoteReportData?: string;
@@ -236,7 +159,6 @@ function buildSummary(
 
   return {
     appName: typeof report?.info.app_name === "string" ? report.info.app_name : undefined,
-    collateralFileName,
     composeHash:
       typeof report?.info.compose_hash === "string"
         ? report.info.compose_hash
@@ -274,14 +196,12 @@ function buildSummary(
 
 function buildVerificationSummary({
   checks,
-  collateralStatus,
   cryptographicStatus,
   evidenceStatus,
   mode,
   verifiedAt,
 }: {
   checks: CheckResult[];
-  collateralStatus: VerificationSummary["collateralStatus"];
   cryptographicStatus: VerificationSummary["cryptographicStatus"];
   evidenceStatus: VerificationSummary["evidenceStatus"];
   mode: VerificationSummary["mode"];
@@ -302,7 +222,6 @@ function buildVerificationSummary({
   if (blockingFailures.length > 0) {
     return {
       badge: "Verification failed",
-      collateralStatus,
       cryptographicStatus,
       description:
         "A blocking local check failed. Do not treat this report as verified.",
@@ -322,7 +241,6 @@ function buildVerificationSummary({
   if (cryptographicStatus === "verified") {
     return {
       badge: "Verified",
-      collateralStatus,
       cryptographicStatus,
       description:
         "Blocking local structure, binding, certificate, and cryptographic checks passed.",
@@ -341,10 +259,9 @@ function buildVerificationSummary({
 
   return {
     badge: "Partially verified",
-    collateralStatus,
     cryptographicStatus,
     description:
-      "Blocking local checks passed, but the app still lacks all of the collateral or raw-evidence verification needed for a full independent proof.",
+      "Blocking local checks passed, but the raw report did not contain enough supported evidence to complete every independent verification path.",
     evidenceStatus,
     engineLabel: "Engine active",
     failedChecks,
@@ -399,7 +316,6 @@ function buildImmediateErrorResult({
     parseErrors,
     verification: buildVerificationSummary({
       checks,
-      collateralStatus: "not-requested",
       cryptographicStatus: "unsupported",
       evidenceStatus: {
         intel: "unsupported",

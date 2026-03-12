@@ -9,14 +9,7 @@ import {
   toHex,
   verifyEcdsaSignature,
 } from "./crypto";
-import {
-  evaluateQeIdentity,
-  evaluateTcbInfo,
-  isCollateralCurrent,
-  parseIntelPckExtensions,
-  parseQeReport,
-  verifyIntelCollateralSignature,
-} from "./intel";
+import { parseIntelPckExtensions } from "./intel";
 import {
   parseNvidiaEvidence,
   normalizeNvidiaArchitecture,
@@ -24,15 +17,11 @@ import {
 } from "./nvidia";
 import {
   asInfoBlock,
-  asIntelSignedQeIdentity,
-  asIntelSignedTcbInfo,
   asServerVerification,
   asTcbInfo,
   isRecord,
 } from "./schema";
 import type {
-  CollateralBundle,
-  CollateralStatus,
   CryptographicVerificationStatus,
   EvidenceVerificationStatus,
   NormalizedAttestationReport,
@@ -41,7 +30,6 @@ import type {
 
 type VerificationAnalysis = {
   checks: CheckResult[];
-  collateralStatus: CollateralStatus;
   cryptographicStatus: CryptographicVerificationStatus;
   derivedSigningAddress?: string;
   evidenceStatus: {
@@ -55,7 +43,6 @@ type VerificationAnalysis = {
 
 type DomainVerificationResult = {
   checks: CheckResult[];
-  fetchedCollateral: boolean;
   status: EvidenceVerificationStatus;
 };
 
@@ -121,14 +108,11 @@ type DecodedQuote = {
 
 export async function verifyNormalizedReport(
   report: NormalizedAttestationReport,
-  collateralBundle?: CollateralBundle,
 ): Promise<VerificationAnalysis> {
   const checks: CheckResult[] = [];
   let derivedSigningAddress: string | undefined;
   let quoteReportData: string | undefined;
   let verifiedAt: string | undefined;
-  let mode: VerificationMode = "offline";
-  let collateralStatus: CollateralStatus = collateralBundle ? "provided" : "not-requested";
 
   const evidenceStatus: VerificationAnalysis["evidenceStatus"] = {
     intel: "unsupported",
@@ -269,12 +253,6 @@ export async function verifyNormalizedReport(
     });
 
     checks.push(...appCertResult.checks);
-    ({ collateralStatus, mode } = updateCollateralTracking({
-      collateralStatus,
-      fetchedCollateral: appCertResult.fetchedCollateral,
-      mode,
-      providedBundle: false,
-    }));
   } else {
     checks.push(
       buildCheck({
@@ -338,18 +316,10 @@ export async function verifyNormalizedReport(
     checks.push(...buildMeasurementChecks({ quote, report }));
 
     const tdxCryptoResult = await verifyTdxQuoteCryptography({
-      collateralBundle,
       quote,
     });
     checks.push(...tdxCryptoResult.checks);
     evidenceStatus.intel = tdxCryptoResult.status;
-
-    ({ collateralStatus, mode } = updateCollateralTracking({
-      collateralStatus,
-      fetchedCollateral: tdxCryptoResult.fetchedCollateral,
-      mode,
-      providedBundle: Boolean(collateralBundle?.intel),
-    }));
   } else {
     checks.push(
       buildCheck({
@@ -367,20 +337,12 @@ export async function verifyNormalizedReport(
   }
 
   const nvidiaCryptoResult = await verifyNvidiaEvidence({
-    collateralBundle,
     evidenceList,
     expectedArch: normalizeNvidiaArchitecture(report.nvidia_payload.arch),
     expectedNonce: nvidiaNonce,
   });
   checks.push(...nvidiaCryptoResult.checks);
   evidenceStatus.nvidia = nvidiaCryptoResult.status;
-
-  ({ collateralStatus, mode } = updateCollateralTracking({
-    collateralStatus,
-    fetchedCollateral: nvidiaCryptoResult.fetchedCollateral,
-    mode,
-    providedBundle: Boolean(collateralBundle?.nvidia),
-  }));
 
   checks.push(...buildEventLogChecks(report));
   checks.push(...buildKeyProviderChecks(report));
@@ -391,11 +353,10 @@ export async function verifyNormalizedReport(
 
   return {
     checks,
-    collateralStatus,
     cryptographicStatus: deriveOverallCryptographicStatus(evidenceStatus),
     derivedSigningAddress,
     evidenceStatus,
-    mode,
+    mode: "offline",
     quoteReportData,
     verifiedAt,
   };
@@ -638,10 +599,8 @@ function buildKeyProviderChecks(report: NormalizedAttestationReport): CheckResul
 }
 
 async function verifyTdxQuoteCryptography({
-  collateralBundle,
   quote,
 }: {
-  collateralBundle?: CollateralBundle;
   quote: DecodedQuote;
 }): Promise<DomainVerificationResult> {
   const checks: CheckResult[] = [];
@@ -670,7 +629,6 @@ async function verifyTdxQuoteCryptography({
 
     return {
       checks,
-      fetchedCollateral: false,
       status: "unsupported",
     };
   }
@@ -720,7 +678,6 @@ async function verifyTdxQuoteCryptography({
   const chainResult = await validateCertificateChain({
     bundle: quote.certificationData,
     bundleLabel: "Intel PCK certificate chain",
-    collateralCrlPem: collateralBundle?.intel?.pckCrl ?? collateralBundle?.intel?.intermediateCaCrl,
     domain: "intel",
     jsonPath: "$.intel_quote",
   });
@@ -841,380 +798,17 @@ async function verifyTdxQuoteCryptography({
     pckExtensions !== undefined &&
     !hasBlockingFailures(chainResult.checks);
 
-  const qeIdentity = asIntelSignedQeIdentity(collateralBundle?.intel?.qeIdentity);
-  const tcbInfo = asIntelSignedTcbInfo(collateralBundle?.intel?.tcbInfo);
-  const hasCollateralInputs = Boolean(
-    qeIdentity && tcbInfo && collateralBundle?.intel?.tcbSignChain,
-  );
-
-  checks.push(
-    buildCheck({
-      description: hasCollateralInputs
-        ? "Intel QE identity, TCB info, and the TCB signing chain were supplied for collateral verification."
-        : "Intel QE identity, TCB info, or the TCB signing chain are missing, so TDX collateral verification remains partial.",
-      domain: "collateral",
-      id: "intel-qe-identity-availability",
-      jsonPath: "$.intel_quote",
-      label: "Inspect Intel collateral availability",
-      severity: "advisory",
-      source: collateralBundle?.intel ? "local" : "online-collateral",
-      status: hasCollateralInputs ? "pass" : "info",
-    }),
-  );
-
-  if (!hasCollateralInputs || !pckExtensions) {
-    return {
-      checks,
-      fetchedCollateral: chainResult.fetchedCollateral,
-      status: baseCryptoPassed ? "partial" : "unsupported",
-    };
-  }
-
-  const tcbChainResult = await validateCertificateChain({
-    bundle: collateralBundle!.intel!.tcbSignChain!,
-    bundleLabel: "Intel TCB signing chain",
-    collateralCrlPem: collateralBundle?.intel?.rootCaCrl,
-    domain: "intel",
-    jsonPath: "$.intel.tcbSignChain",
-  });
-  checks.push(...tcbChainResult.checks);
-
-  const tcbChainHealthy = !hasBlockingFailures(tcbChainResult.checks);
-  checks.push(
-    buildCheck({
-      description: tcbChainHealthy
-        ? "The Intel TCB signing chain validated for QE identity verification."
-        : "The Intel TCB signing chain did not validate for QE identity verification.",
-      domain: "tdx",
-      id: "intel-qe-identity-chain",
-      jsonPath: "$.intel.qeIdentity",
-      label: "Validate QE identity signing chain",
-      severity: "blocking",
-      source: "local",
-      status: tcbChainHealthy ? "pass" : "fail",
-    }),
-  );
-  checks.push(
-    buildCheck({
-      description: tcbChainHealthy
-        ? "The Intel TCB signing chain validated for TCB info verification."
-        : "The Intel TCB signing chain did not validate for TCB info verification.",
-      domain: "tdx",
-      id: "intel-tcb-info-chain",
-      jsonPath: "$.intel.tcbInfo",
-      label: "Validate TCB info signing chain",
-      severity: "blocking",
-      source: "local",
-      status: tcbChainHealthy ? "pass" : "fail",
-    }),
-  );
-
-  const qeIdentitySignatureValid =
-    tcbChainHealthy && tcbChainResult.chain
-      ? await verifyIntelCollateralSignature({
-          body: qeIdentity!.enclaveIdentity,
-          chain: tcbChainResult.chain,
-          signatureHex: qeIdentity!.signature,
-        })
-      : false;
-  const tcbInfoSignatureValid =
-    tcbChainHealthy && tcbChainResult.chain
-      ? await verifyIntelCollateralSignature({
-          body: tcbInfo!.tcbInfo,
-          chain: tcbChainResult.chain,
-          signatureHex: tcbInfo!.signature,
-        })
-      : false;
-
-  checks.push(
-    buildCheck({
-      description: qeIdentitySignatureValid
-        ? "The QE identity signature validates against the Intel TCB signing certificate."
-        : "The QE identity signature does not validate against the Intel TCB signing certificate.",
-      domain: "tdx",
-      id: "intel-qe-identity-signature",
-      jsonPath: "$.intel.qeIdentity",
-      label: "Verify QE identity signature",
-      severity: "blocking",
-      source: "local",
-      status: qeIdentitySignatureValid ? "pass" : "fail",
-    }),
-  );
-
-  checks.push(
-    buildCheck({
-      description: tcbInfoSignatureValid
-        ? "The TCB info signature validates against the Intel TCB signing certificate."
-        : "The TCB info signature does not validate against the Intel TCB signing certificate.",
-      domain: "tdx",
-      id: "intel-tcb-info-signature",
-      jsonPath: "$.intel.tcbInfo",
-      label: "Verify TCB info signature",
-      severity: "blocking",
-      source: "local",
-      status: tcbInfoSignatureValid ? "pass" : "fail",
-    }),
-  );
-
-  const qeIdentityCurrent = isCollateralCurrent(qeIdentity!.enclaveIdentity);
-  const tcbInfoCurrent = isCollateralCurrent(tcbInfo!.tcbInfo);
-
-  checks.push(
-    buildCheck({
-      description: qeIdentityCurrent
-        ? "The QE identity collateral is within its issueDate/nextUpdate validity window."
-        : "The QE identity collateral is outside its issueDate/nextUpdate validity window.",
-      domain: "tdx",
-      id: "intel-qe-identity-validity",
-      jsonPath: "$.intel.qeIdentity",
-      label: "Check QE identity validity window",
-      severity: "blocking",
-      source: "local",
-      status: qeIdentityCurrent ? "pass" : "fail",
-    }),
-  );
-
-  checks.push(
-    buildCheck({
-      description: tcbInfoCurrent
-        ? "The TCB info collateral is within its issueDate/nextUpdate validity window."
-        : "The TCB info collateral is outside its issueDate/nextUpdate validity window.",
-      domain: "tdx",
-      id: "intel-tcb-info-validity",
-      jsonPath: "$.intel.tcbInfo",
-      label: "Check TCB info validity window",
-      severity: "blocking",
-      source: "local",
-      status: tcbInfoCurrent ? "pass" : "fail",
-    }),
-  );
-
-  const qeReport = parseQeReport(quote.qeReport);
-  checks.push(
-    buildCheck({
-      description: qeReport
-        ? "The QE report parsed successfully for QE identity evaluation."
-        : "The QE report could not be parsed for QE identity evaluation.",
-      domain: "tdx",
-      id: "intel-qe-report-parse",
-      jsonPath: "$.intel_quote",
-      label: "Parse QE report fields",
-      severity: "blocking",
-      source: "local",
-      status: qeReport ? "pass" : "fail",
-    }),
-  );
-
-  if (!qeReport) {
-    return {
-      checks,
-      fetchedCollateral: chainResult.fetchedCollateral || tcbChainResult.fetchedCollateral,
-      status: baseCryptoPassed ? "partial" : "unsupported",
-    };
-  }
-
-  const qeIdentityEvaluation = evaluateQeIdentity({
-    qeIdentity: qeIdentity!.enclaveIdentity,
-    qeReport,
-  });
-
-  checks.push(
-    buildCheck({
-      description: qeIdentityEvaluation.miscselectMatch
-        ? "The QE report miscselect satisfies the QE identity policy mask."
-        : "The QE report miscselect does not satisfy the QE identity policy mask.",
-      domain: "tdx",
-      id: "intel-qe-miscselect",
-      jsonPath: "$.intel.qeIdentity",
-      label: "Check QE miscselect policy",
-      severity: "blocking",
-      source: "local",
-      status: qeIdentityEvaluation.miscselectMatch ? "pass" : "fail",
-    }),
-  );
-
-  checks.push(
-    buildCheck({
-      description: qeIdentityEvaluation.attributesMatch
-        ? "The QE report attributes satisfy the QE identity policy mask."
-        : "The QE report attributes do not satisfy the QE identity policy mask.",
-      domain: "tdx",
-      id: "intel-qe-attributes",
-      jsonPath: "$.intel.qeIdentity",
-      label: "Check QE attributes policy",
-      severity: "blocking",
-      source: "local",
-      status: qeIdentityEvaluation.attributesMatch ? "pass" : "fail",
-    }),
-  );
-
-  checks.push(
-    buildCheck({
-      description: qeIdentityEvaluation.mrsignerMatch
-        ? "The QE report MRSIGNER matches the QE identity collateral."
-        : "The QE report MRSIGNER does not match the QE identity collateral.",
-      domain: "tdx",
-      id: "intel-qe-mrsigner",
-      jsonPath: "$.intel.qeIdentity",
-      label: "Check QE MRSIGNER binding",
-      severity: "blocking",
-      source: "local",
-      status: qeIdentityEvaluation.mrsignerMatch ? "pass" : "fail",
-    }),
-  );
-
-  checks.push(
-    buildCheck({
-      description: qeIdentityEvaluation.isvprodidMatch
-        ? "The QE report ISV product ID matches the QE identity collateral."
-        : "The QE report ISV product ID does not match the QE identity collateral.",
-      domain: "tdx",
-      id: "intel-qe-isvprodid",
-      jsonPath: "$.intel.qeIdentity",
-      label: "Check QE ISV product ID",
-      severity: "blocking",
-      source: "local",
-      status: qeIdentityEvaluation.isvprodidMatch ? "pass" : "fail",
-    }),
-  );
-
-  checks.push(
-    buildCheck({
-      description: qeIdentityEvaluation.status
-        ? `The QE identity selected status ${qeIdentityEvaluation.status} for the QE report ISV SVN.`
-        : "The QE identity collateral did not contain a matching TCB level for the QE report ISV SVN.",
-      domain: "tdx",
-      id: "intel-qe-isvsvn-status",
-      jsonPath: "$.intel.qeIdentity",
-      label: "Evaluate QE ISV SVN status",
-      severity: "blocking",
-      source: "local",
-      status: qeIdentityEvaluation.status === "UpToDate" ? "pass" : "fail",
-    }),
-  );
-
-  const tcbEvaluation = evaluateTcbInfo({
-    pckExtensions,
-    quoteMrSignerSeam: quote.mrSignerSeam,
-    quoteSeamAttributes: quote.seamAttributes,
-    quoteTeeTcbSvn: quote.teeTcbSvn,
-    tcbInfo: tcbInfo!.tcbInfo,
-  });
-
-  checks.push(
-    buildCheck({
-      description: tcbEvaluation.fmspcMatch
-        ? "The PCK certificate FMSPC matches the Intel TCB info collateral."
-        : "The PCK certificate FMSPC does not match the Intel TCB info collateral.",
-      domain: "tdx",
-      id: "intel-pck-fmspc",
-      jsonPath: "$.intel.tcbInfo",
-      label: "Check Intel FMSPC binding",
-      severity: "blocking",
-      source: "local",
-      status: tcbEvaluation.fmspcMatch ? "pass" : "fail",
-    }),
-  );
-
-  checks.push(
-    buildCheck({
-      description: tcbEvaluation.pceIdMatch
-        ? "The PCK certificate PCE ID matches the Intel TCB info collateral."
-        : "The PCK certificate PCE ID does not match the Intel TCB info collateral.",
-      domain: "tdx",
-      id: "intel-pck-pceid",
-      jsonPath: "$.intel.tcbInfo",
-      label: "Check Intel PCE ID binding",
-      severity: "blocking",
-      source: "local",
-      status: tcbEvaluation.pceIdMatch ? "pass" : "fail",
-    }),
-  );
-
-  checks.push(
-    buildCheck({
-      description: tcbEvaluation.tdxModuleMrsignerMatch
-        ? "The quote TDX module signer matches the Intel TCB info collateral."
-        : "The quote TDX module signer does not match the Intel TCB info collateral.",
-      domain: "tdx",
-      id: "intel-tdx-module-mrsigner",
-      jsonPath: "$.intel.tcbInfo",
-      label: "Check TDX module signer",
-      severity: "blocking",
-      source: "local",
-      status: tcbEvaluation.tdxModuleMrsignerMatch ? "pass" : "fail",
-    }),
-  );
-
-  checks.push(
-    buildCheck({
-      description: tcbEvaluation.tdxModuleAttributesMatch
-        ? "The quote SEAM attributes satisfy the Intel TCB module attribute mask."
-        : "The quote SEAM attributes do not satisfy the Intel TCB module attribute mask.",
-      domain: "tdx",
-      id: "intel-tdx-module-attributes",
-      jsonPath: "$.intel.tcbInfo",
-      label: "Check TDX module attributes",
-      severity: "blocking",
-      source: "local",
-      status: tcbEvaluation.tdxModuleAttributesMatch ? "pass" : "fail",
-    }),
-  );
-
-  checks.push(
-    buildCheck({
-      description: tcbEvaluation.levelMatch
-        ? "The quote and PCK TCB values matched a TCB level in the Intel collateral."
-        : "The quote and PCK TCB values did not match any TCB level in the Intel collateral.",
-      domain: "tdx",
-      id: "intel-tcb-level-match",
-      jsonPath: "$.intel.tcbInfo",
-      label: "Match Intel TCB level",
-      severity: "blocking",
-      source: "local",
-      status: tcbEvaluation.levelMatch ? "pass" : "fail",
-    }),
-  );
-
-  checks.push(
-    buildCheck({
-      description: tcbEvaluation.status
-        ? `The matched Intel TCB level produced status ${tcbEvaluation.status}.`
-        : "The Intel TCB info did not yield an acceptable TCB status for this quote.",
-      domain: "tdx",
-      id: "intel-tcb-status",
-      jsonPath: "$.intel.tcbInfo",
-      label: "Evaluate Intel TCB status",
-      severity: "blocking",
-      source: "local",
-      status: tcbEvaluation.status === "UpToDate" ? "pass" : "fail",
-    }),
-  );
-
-  const fullVerificationPassed =
-    baseCryptoPassed &&
-    tcbChainHealthy &&
-    qeIdentitySignatureValid &&
-    tcbInfoSignatureValid &&
-    qeIdentityCurrent &&
-    tcbInfoCurrent &&
-    qeIdentityEvaluation.acceptable &&
-    tcbEvaluation.acceptable;
-
   return {
     checks,
-    fetchedCollateral: chainResult.fetchedCollateral || tcbChainResult.fetchedCollateral,
-    status: fullVerificationPassed ? "verified" : baseCryptoPassed ? "partial" : "unsupported",
+    status: baseCryptoPassed ? "verified" : "unsupported",
   };
 }
 
 async function verifyNvidiaEvidence({
-  collateralBundle,
   evidenceList,
   expectedArch,
   expectedNonce,
 }: {
-  collateralBundle?: CollateralBundle;
   evidenceList: NormalizedAttestationReport["nvidia_payload"]["evidence_list"];
   expectedArch?: string;
   expectedNonce?: string;
@@ -1224,12 +818,10 @@ async function verifyNvidiaEvidence({
   if (evidenceList.length === 0) {
     return {
       checks,
-      fetchedCollateral: false,
       status: "unsupported",
     };
   }
 
-  let fetchedCollateral = false;
   let everyEntryVerified = true;
   let anyEntryParsed = false;
 
@@ -1238,13 +830,11 @@ async function verifyNvidiaEvidence({
     const chainResult = await validateCertificateChain({
       bundle: certificatePem,
       bundleLabel: `NVIDIA certificate chain ${index + 1}`,
-      collateralCrlPem: collateralBundle?.nvidia?.crls?.[index],
       domain: "nvidia",
       jsonPath: `$.nvidia_payload.evidence_list[${index}].certificate`,
     });
 
     checks.push(...chainResult.checks);
-    fetchedCollateral ||= chainResult.fetchedCollateral;
 
     const evidenceBytes = normalizeBase64(entry.evidence);
     checks.push(
@@ -1409,7 +999,6 @@ async function verifyNvidiaEvidence({
 
   return {
     checks,
-    fetchedCollateral,
     status: everyEntryVerified && anyEntryParsed ? "verified" : anyEntryParsed ? "partial" : "unsupported",
   };
 }
@@ -1428,8 +1017,8 @@ function evaluateEmbeddedClaims(
     checks.push(
       buildCheck({
         description:
-          "No embedded server verification block was present. Embedded claims are optional provenance only and do not control the verdict.",
-        domain: "collateral",
+          "No embedded server verification block was present. Embedded Venice or NRAS claims are optional provenance only and do not control the verdict.",
+        domain: "provenance",
         id: "embedded-verification-claims",
         jsonPath: "$.server_verification",
         label: "Inspect embedded verification claims",
@@ -1455,9 +1044,9 @@ function evaluateEmbeddedClaims(
     buildCheck({
       description:
         report.verified === true
-          ? "The report includes an embedded verified flag from an upstream verifier."
+          ? "The report includes an embedded verified flag reported by an upstream Venice or NRAS verifier."
           : "The report does not include an embedded verified flag.",
-      domain: "collateral",
+      domain: "provenance",
       id: "embedded-report-verified-flag",
       jsonPath: "$.verified",
       label: "Inspect embedded verified flag",
@@ -1473,7 +1062,7 @@ function evaluateEmbeddedClaims(
         tdx?.valid === true
           ? "The embedded verifier reports a valid TDX quote."
           : "The embedded verifier does not report a valid TDX quote.",
-      domain: "tdx",
+      domain: "provenance",
       id: "embedded-tdx-claims",
       jsonPath: "$.server_verification.tdx",
       label: "Inspect embedded TDX verification claims",
@@ -1489,7 +1078,7 @@ function evaluateEmbeddedClaims(
         nvidia?.valid === true
           ? "The embedded verifier reports valid NVIDIA evidence."
           : "The embedded verifier does not report valid NVIDIA evidence.",
-      domain: "nvidia",
+      domain: "provenance",
       id: "embedded-nvidia-claims",
       jsonPath: "$.server_verification.nvidia",
       label: "Inspect embedded NVIDIA verification claims",
@@ -1511,7 +1100,7 @@ function evaluateEmbeddedClaims(
         embeddedAddress !== undefined && embeddedAddress === derivedSigningAddress
           ? "The embedded verifier reports the same signing address binding derived locally."
           : "The embedded verifier does not provide a matching signing address binding.",
-      domain: "binding",
+      domain: "provenance",
       id: "embedded-binding-claims",
       jsonPath: "$.server_verification",
       label: "Inspect embedded binding claims",
@@ -1916,44 +1505,6 @@ function toPemCertificate(derBytes: Uint8Array): string {
   ).match(/.{1,64}/g)?.join("\n");
 
   return `-----BEGIN CERTIFICATE-----\n${base64 ?? ""}\n-----END CERTIFICATE-----`;
-}
-
-function updateCollateralTracking({
-  collateralStatus,
-  fetchedCollateral,
-  mode,
-  providedBundle,
-}: {
-  collateralStatus: CollateralStatus;
-  fetchedCollateral: boolean;
-  mode: VerificationMode;
-  providedBundle: boolean;
-}): { collateralStatus: CollateralStatus; mode: VerificationMode } {
-  if (fetchedCollateral) {
-    return {
-      collateralStatus: "fetched",
-      mode: "online",
-    };
-  }
-
-  if (providedBundle && collateralStatus !== "fetched") {
-    return {
-      collateralStatus: "provided",
-      mode,
-    };
-  }
-
-  if (collateralStatus === "not-requested") {
-    return {
-      collateralStatus: "missing",
-      mode,
-    };
-  }
-
-  return {
-    collateralStatus,
-    mode,
-  };
 }
 
 function hasBlockingFailures(checks: CheckResult[]): boolean {
