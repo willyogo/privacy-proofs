@@ -20,6 +20,10 @@ export function createIdleParseResult(): ParseResult {
       cryptographicStatus: "unsupported",
       description:
         "Paste or upload an attestation report, then run the browser-side verifier.",
+      evidenceStatus: {
+        intel: "unsupported",
+        nvidia: "unsupported",
+      },
       engineLabel: "Engine ready",
       failedChecks: 0,
       headline: "Ready to verify",
@@ -199,6 +203,7 @@ export async function parseReportSource(
     checks,
     collateralStatus: verificationAnalysis.collateralStatus,
     cryptographicStatus: verificationAnalysis.cryptographicStatus,
+    evidenceStatus: verificationAnalysis.evidenceStatus,
     mode: verificationAnalysis.mode,
     verifiedAt: verificationAnalysis.verifiedAt,
   });
@@ -271,12 +276,14 @@ function buildVerificationSummary({
   checks,
   collateralStatus,
   cryptographicStatus,
+  evidenceStatus,
   mode,
   verifiedAt,
 }: {
   checks: CheckResult[];
   collateralStatus: VerificationSummary["collateralStatus"];
   cryptographicStatus: VerificationSummary["cryptographicStatus"];
+  evidenceStatus: VerificationSummary["evidenceStatus"];
   mode: VerificationSummary["mode"];
   verifiedAt?: string;
 }): VerificationSummary {
@@ -299,6 +306,7 @@ function buildVerificationSummary({
       cryptographicStatus,
       description:
         "A blocking local check failed. Do not treat this report as verified.",
+      evidenceStatus,
       engineLabel: "Engine active",
       failedChecks,
       headline: "Verification failed",
@@ -318,6 +326,7 @@ function buildVerificationSummary({
       cryptographicStatus,
       description:
         "Blocking local structure, binding, certificate, and cryptographic checks passed.",
+      evidenceStatus,
       engineLabel: "Engine active",
       failedChecks,
       headline: "Attestation verified",
@@ -336,6 +345,7 @@ function buildVerificationSummary({
     cryptographicStatus,
     description:
       "Blocking local checks passed, but the app still lacks all of the collateral or raw-evidence verification needed for a full independent proof.",
+    evidenceStatus,
     engineLabel: "Engine active",
     failedChecks,
     headline: "Partial verification",
@@ -391,6 +401,10 @@ function buildImmediateErrorResult({
       checks,
       collateralStatus: "not-requested",
       cryptographicStatus: "unsupported",
+      evidenceStatus: {
+        intel: "unsupported",
+        nvidia: "unsupported",
+      },
       mode: "offline",
     }),
   };

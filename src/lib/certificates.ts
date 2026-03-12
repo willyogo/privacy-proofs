@@ -6,7 +6,7 @@ import {
 } from "@peculiar/x509";
 import type { CheckResult, CheckSource } from "./check-result";
 import { sha256Hex, fromBase64, toBase64 } from "./crypto";
-import { getPinnedRootFingerprint, type TrustDomain } from "./trust-store";
+import { getPinnedRootFingerprints, type TrustDomain } from "./trust-store";
 
 type CertificateValidationOptions = {
   bundle: string;
@@ -94,11 +94,7 @@ export async function validateCertificateChain({
 
   let chain: X509Certificate[];
   try {
-    chain = Array.from(
-      await new X509ChainBuilder({
-        certificates: certificates.slice(1),
-      }).build(certificates[0]),
-    );
+    chain = await buildBestCertificateChain(certificates);
   } catch (error) {
     return {
       checks: [
@@ -156,14 +152,32 @@ export async function validateCertificateChain({
   );
 
   const root = chain.at(-1);
-  const expectedFingerprint = getPinnedRootFingerprint(domain);
+  const expectedFingerprints = getPinnedRootFingerprints(domain);
+  const providedPinnedRoot = certificates.find(
+    (certificate) => {
+      const fingerprint = sha256Hex(new Uint8Array(certificate.rawData));
+      return expectedFingerprints.includes(fingerprint);
+    },
+  );
   const actualFingerprint =
     root !== undefined ? sha256Hex(new Uint8Array(root.rawData)) : undefined;
+  const effectiveRoot =
+    actualFingerprint && expectedFingerprints.includes(actualFingerprint)
+      ? root
+      : providedPinnedRoot;
+
+  if (
+    effectiveRoot &&
+    chain.at(-1) !== effectiveRoot &&
+    !chain.some((certificate) => certificate === effectiveRoot)
+  ) {
+    chain = [...chain, effectiveRoot];
+  }
 
   checks.push(
     buildCheck({
       description:
-        actualFingerprint === expectedFingerprint
+        effectiveRoot !== undefined
           ? `${bundleLabel} terminates at the pinned ${domain} trust anchor.`
           : `${bundleLabel} does not terminate at the pinned ${domain} trust anchor.`,
       domain: certificateDomain(domain),
@@ -172,7 +186,7 @@ export async function validateCertificateChain({
       label: `Check ${bundleLabel} root pin`,
       severity: "blocking",
       source: "local",
-      status: actualFingerprint === expectedFingerprint ? "pass" : "fail",
+      status: effectiveRoot !== undefined ? "pass" : "fail",
     }),
   );
 
@@ -194,6 +208,59 @@ export async function validateCertificateChain({
 
 export function splitPemBundle(bundle: string): string[] {
   return bundle.match(/-----BEGIN CERTIFICATE-----[\s\S]*?-----END CERTIFICATE-----/g) ?? [];
+}
+
+async function buildBestCertificateChain(
+  certificates: X509Certificate[],
+): Promise<X509Certificate[]> {
+  const candidates = [...certificates].sort((left, right) => {
+    const leftIssuedCount = countIssuedCertificates(left, certificates);
+    const rightIssuedCount = countIssuedCertificates(right, certificates);
+    if (leftIssuedCount !== rightIssuedCount) {
+      return leftIssuedCount - rightIssuedCount;
+    }
+
+    return Number(isSelfSigned(left)) - Number(isSelfSigned(right));
+  });
+
+  let bestChain: X509Certificate[] | undefined;
+  let lastError: unknown;
+
+  for (const leaf of candidates) {
+    try {
+      const chain = Array.from(
+        await new X509ChainBuilder({
+          certificates: certificates.filter((certificate) => certificate !== leaf),
+        }).build(leaf),
+      );
+
+      if (!bestChain || chain.length > bestChain.length) {
+        bestChain = chain;
+      }
+    } catch (error) {
+      lastError = error;
+    }
+  }
+
+  if (bestChain) {
+    return bestChain;
+  }
+
+  throw lastError instanceof Error ? lastError : new Error("No issuer chain could be built.");
+}
+
+function countIssuedCertificates(
+  issuerCandidate: X509Certificate,
+  certificates: X509Certificate[],
+): number {
+  return certificates.filter(
+    (certificate) =>
+      certificate !== issuerCandidate && certificate.issuer === issuerCandidate.subject,
+  ).length;
+}
+
+function isSelfSigned(certificate: X509Certificate): boolean {
+  return certificate.subject === certificate.issuer;
 }
 
 async function validateRevocation({

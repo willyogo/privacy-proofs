@@ -20,6 +20,11 @@ export type CryptographicVerificationStatus =
   | "partial"
   | "unsupported";
 
+export type EvidenceVerificationStatus =
+  | "unsupported"
+  | "partial"
+  | "verified";
+
 export type EventLogEntry = {
   digest?: string;
   event?: string;
@@ -63,6 +68,7 @@ export type NvidiaEvidenceEntry = {
   arch?: string;
   certificate: string;
   evidence: string;
+  nonce?: string;
   [key: string]: unknown;
 };
 
@@ -82,6 +88,70 @@ export type ServerVerification = {
   verificationDurationMs?: number;
   verifiedAt?: string;
   [key: string]: unknown;
+};
+
+export type IntelQeIdentityLevel = {
+  advisoryIDs?: readonly string[];
+  tcb: {
+    isvsvn: number;
+  };
+  tcbDate: string;
+  tcbStatus: string;
+};
+
+export type IntelSignedQeIdentity = {
+  enclaveIdentity: {
+    attributes: string;
+    attributesMask: string;
+    id: string;
+    isvprodid: number;
+    issueDate: string;
+    miscselect: string;
+    miscselectMask: string;
+    mrsigner: string;
+    nextUpdate: string;
+    tcbEvaluationDataNumber: number;
+    tcbLevels: readonly IntelQeIdentityLevel[];
+    version: number;
+  };
+  signature: string;
+};
+
+export type IntelTcbComponent = {
+  category?: string;
+  svn: number;
+  type?: string;
+};
+
+export type IntelTcbLevel = {
+  advisoryIDs?: readonly string[];
+  tcb: {
+    pcesvn: number;
+    sgxtcbcomponents: readonly IntelTcbComponent[];
+    tdxtcbcomponents?: readonly IntelTcbComponent[];
+  };
+  tcbDate: string;
+  tcbStatus: string;
+};
+
+export type IntelSignedTcbInfo = {
+  tcbInfo: {
+    fmspc: string;
+    id: string;
+    issueDate: string;
+    nextUpdate: string;
+    pceId: string;
+    tcbEvaluationDataNumber: number;
+    tcbLevels: readonly IntelTcbLevel[];
+    tcbType?: number;
+    tdxModule?: {
+      attributes: string;
+      attributesMask: string;
+      mrsigner: string;
+    };
+    version: number;
+  };
+  signature: string;
 };
 
 export type NormalizedAttestationReport = {
@@ -107,9 +177,12 @@ export type NormalizedAttestationReport = {
 
 export type CollateralBundle = {
   intel?: {
+    intermediateCaCrl?: string;
     pckCrl?: string;
-    qeIdentity?: unknown;
-    tcbInfo?: unknown;
+    qeIdentity?: IntelSignedQeIdentity;
+    rootCaCrl?: string;
+    tcbInfo?: IntelSignedTcbInfo;
+    tcbSignChain?: string;
     [key: string]: unknown;
   };
   nvidia?: {
@@ -130,6 +203,10 @@ export type VerificationSummary = {
   collateralStatus: CollateralStatus;
   cryptographicStatus: CryptographicVerificationStatus;
   description: string;
+  evidenceStatus: {
+    intel: EvidenceVerificationStatus;
+    nvidia: EvidenceVerificationStatus;
+  };
   engineLabel: string;
   failedChecks: number;
   headline: string;

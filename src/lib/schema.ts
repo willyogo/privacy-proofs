@@ -3,6 +3,8 @@ import type {
   CollateralBundle,
   EventLogEntry,
   InfoBlock,
+  IntelSignedQeIdentity,
+  IntelSignedTcbInfo,
   NormalizationError,
   NormalizedAttestationReport,
   NvidiaPayload,
@@ -57,6 +59,7 @@ const nvidiaEvidenceEntrySchema = z
     arch: z.string().optional(),
     certificate: z.string(),
     evidence: z.string(),
+    nonce: z.string().optional(),
   })
   .passthrough();
 
@@ -79,6 +82,112 @@ const serverVerificationSchema = z
     verifiedAt: z.string().optional(),
   })
   .passthrough();
+
+const intelQeIdentityLevelSchema = z.object({
+  advisoryIDs: z.array(z.string()).optional(),
+  tcb: z.object({
+    isvsvn: z.number(),
+  }),
+  tcbDate: z.string(),
+  tcbStatus: z.string(),
+});
+
+const intelSignedQeIdentityObjectSchema = z.object({
+  enclaveIdentity: z.object({
+    attributes: z.string(),
+    attributesMask: z.string(),
+    id: z.string(),
+    isvprodid: z.number(),
+    issueDate: z.string(),
+    miscselect: z.string(),
+    miscselectMask: z.string(),
+    mrsigner: z.string(),
+    nextUpdate: z.string(),
+    tcbEvaluationDataNumber: z.number(),
+    tcbLevels: z.array(intelQeIdentityLevelSchema),
+    version: z.number(),
+  }),
+  signature: z.string(),
+});
+
+const intelTcbComponentSchema = z
+  .object({
+    category: z.string().optional(),
+    svn: z.number(),
+    type: z.string().optional(),
+  })
+  .passthrough();
+
+const intelTcbLevelSchema = z.object({
+  advisoryIDs: z.array(z.string()).optional(),
+  tcb: z.object({
+    pcesvn: z.number(),
+    sgxtcbcomponents: z.array(intelTcbComponentSchema).length(16),
+    tdxtcbcomponents: z.array(intelTcbComponentSchema).length(16).optional(),
+  }),
+  tcbDate: z.string(),
+  tcbStatus: z.string(),
+});
+
+const intelSignedTcbInfoObjectSchema = z.object({
+  tcbInfo: z.object({
+    fmspc: z.string(),
+    id: z.string(),
+    issueDate: z.string(),
+    nextUpdate: z.string(),
+    pceId: z.string(),
+    tcbEvaluationDataNumber: z.number(),
+    tcbLevels: z.array(intelTcbLevelSchema),
+    tcbType: z.number().optional(),
+    tdxModule: z
+      .object({
+        attributes: z.string(),
+        attributesMask: z.string(),
+        mrsigner: z.string(),
+      })
+      .optional(),
+    version: z.number(),
+  }),
+  signature: z.string(),
+});
+
+const intelSignedQeIdentitySchema = z.union([
+  intelSignedQeIdentityObjectSchema,
+  z.string().transform((value, ctx) => {
+    try {
+      const parsed = JSON.parse(value);
+      return intelSignedQeIdentityObjectSchema.parse(parsed);
+    } catch (error) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message:
+          error instanceof Error
+            ? `The Intel QE identity could not be decoded as JSON: ${error.message}`
+            : "The Intel QE identity could not be decoded as JSON.",
+      });
+      return z.NEVER;
+    }
+  }),
+]);
+
+const intelSignedTcbInfoSchema = z.union([
+  intelSignedTcbInfoObjectSchema,
+  z.string().transform((value, ctx) => {
+    try {
+      const parsed = JSON.parse(value);
+      return intelSignedTcbInfoObjectSchema.parse(parsed);
+    } catch (error) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message:
+          error instanceof Error
+            ? `The Intel TCB info could not be decoded as JSON: ${error.message}`
+            : "The Intel TCB info could not be decoded as JSON.",
+      });
+      return z.NEVER;
+    }
+  }),
+]);
 
 const nvidiaPayloadSchema = z.union([
   nvidiaPayloadObjectSchema,
@@ -145,9 +254,12 @@ export const collateralBundleSchema = z
   .object({
     intel: z
       .object({
+        intermediateCaCrl: z.string().optional(),
         pckCrl: z.string().optional(),
-        qeIdentity: z.unknown().optional(),
-        tcbInfo: z.unknown().optional(),
+        qeIdentity: intelSignedQeIdentitySchema.optional(),
+        rootCaCrl: z.string().optional(),
+        tcbInfo: intelSignedTcbInfoSchema.optional(),
+        tcbSignChain: z.string().optional(),
       })
       .passthrough()
       .optional(),
@@ -235,6 +347,22 @@ export function asServerVerification(
 
 export function asTcbInfo(value: unknown): TcbInfo | undefined {
   return tcbInfoSchema.safeParse(value).success ? (value as TcbInfo) : undefined;
+}
+
+export function asIntelSignedQeIdentity(
+  value: unknown,
+): IntelSignedQeIdentity | undefined {
+  return intelSignedQeIdentityObjectSchema.safeParse(value).success
+    ? (value as IntelSignedQeIdentity)
+    : undefined;
+}
+
+export function asIntelSignedTcbInfo(
+  value: unknown,
+): IntelSignedTcbInfo | undefined {
+  return intelSignedTcbInfoObjectSchema.safeParse(value).success
+    ? (value as IntelSignedTcbInfo)
+    : undefined;
 }
 
 function mapZodIssues(issues: z.ZodIssue[]): NormalizationError[] {

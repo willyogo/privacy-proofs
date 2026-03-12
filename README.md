@@ -5,13 +5,13 @@
 You can paste raw JSON or upload a report file, and the app will:
 
 - parse and normalize the report with explicit schemas
-- validate local bindings, certificate chains, and Intel TDX quote signatures in the browser
+- validate local bindings, certificate chains, Intel TDX collateral, and NVIDIA raw evidence in the browser
 - optionally accept a collateral bundle for follow-on validation inputs
 - show a verdict of `Verified`, `Partially verified`, or `Verification failed`
 
 ## Purpose
 
-This repo exists to make Venice attestation reports easier to inspect without sending the report to a backend service. The current build performs real local validation for report structure, internal bindings, certificate chains, and the Intel TDX quote signature path.
+This repo exists to make Venice attestation reports easier to inspect without sending the report to a backend service. The current build performs real local validation for report structure, internal bindings, certificate chains, Intel TDX quote and collateral checks, and NVIDIA evidence signatures.
 
 Today, the app is best understood as a transparent verifier UI with an independent local verification engine that still keeps unsupported evidence paths in a partial state instead of over-claiming verification.
 
@@ -35,16 +35,19 @@ The app is a Vite + React + TypeScript single-page application.
    - signing public key -> Ethereum address derivation
    - equality checks across duplicated signing key fields
    - nonce consistency between top-level and nested payloads
-   - app certificate chain validation against a pinned root fingerprint
-   - Intel PCK certificate chain validation against a pinned root fingerprint
+   - app certificate chain validation against a pinned trust store
+   - Intel PCK certificate chain validation against a pinned trust store
    - Intel quote signature validation against the embedded attestation key
    - QE report signature validation against the Intel PCK leaf certificate
    - QE report-data binding between the attestation key and QE auth data
+   - QE identity signature, validity-window, and policy evaluation
+   - TCB info signature, validity-window, FMSPC/PCE ID, and TCB-level evaluation
    - report-data binding between signing address and nonce
    - TDX measurement checks (`MRTD`, `RTMR0-3`, `MRCONFIGID`)
    - event log consistency checks against the `info` / `tcb_info` block
    - key-provider metadata consistency checks
-   - NVIDIA certificate-chain validation against a pinned root fingerprint
+   - NVIDIA certificate-chain validation against a pinned trust store
+   - NVIDIA raw-evidence parsing, signature verification, nonce binding, FWID binding, and architecture binding
    - advisory inspection of embedded `server_verification` claims
    - advisory tracking of fetched revocation collateral when available
 8. `buildVerificationSummary(...)` classifies the result:
@@ -58,20 +61,20 @@ The app is a Vite + React + TypeScript single-page application.
 
 ## Current Scope and Limits
 
-This repository now performs a materially stronger local verification pass than the original implementation, but it still does **not** complete every evidence path required for unconditional production-grade attestation proof.
+This repository now performs a materially stronger local verification pass than the original implementation, but it still does **not** ship every artifact needed for a repo-local end-to-end `Verified` golden Venice fixture.
 
-According to `IMPLEMENTATION_PLAN.md`, these areas are still pending:
+The main remaining limits are:
 
-- full NVIDIA raw-evidence signature verification
-- full Intel QE identity / TCB collateral validation
-- a repo-local golden attestation fixture that exercises the full real-world quote path end-to-end
+- there is not yet a committed Venice report fixture that reaches `Verified` fully offline from a single repo-local report plus collateral bundle
+- Intel's published QVL `AttestationApp/sampleData/tdx` fixture set contains a QE identity whose signed `mrsigner` does not match the accompanying `quote.dat`, so it is useful as a regression sample but not as a full-positive golden
+- online collateral fetch remains best-effort and depends on browser/network availability, so offline collateral upload is still the guaranteed path
 
 That means a positive result in this app should currently be read as:
 
 - blocking local bindings, schema checks, and supported certificate/signature checks passed, and
 - unsupported evidence paths remained partial instead of being silently treated as verified
 
-It should not be read as proof that this repo independently re-derived every cryptographic guarantee from raw Intel and NVIDIA evidence yet.
+It should be read as proof only for the evidence paths the app independently re-derived from the supplied bytes and collateral.
 
 ## Repo Layout
 
@@ -116,8 +119,8 @@ npm test
 Notes:
 
 - The test suite is repo-local and does not depend on a machine-specific report path.
-- Current tests focus on schema failures, verdict construction, unsupported quote versions, and the explicit verify UI flow.
-- A committed golden fixture for the full real-world attestation path is still pending.
+- Current tests cover schema failures, verdict construction, unsupported quote versions, explicit verify UI flow, Intel collateral evaluation, and NVIDIA raw-evidence verification.
+- The remaining fixture gap is a single repo-local Venice report that reaches `Verified` end-to-end.
 
 ### Build for production
 
@@ -149,9 +152,12 @@ The optional collateral bundle currently accepts a JSON object with these top-le
 ```json
 {
   "intel": {
+    "intermediateCaCrl": "-----BEGIN X509 CRL-----...",
     "pckCrl": "-----BEGIN X509 CRL-----...",
-    "qeIdentity": {},
-    "tcbInfo": {}
+    "qeIdentity": { "enclaveIdentity": {}, "signature": "..." },
+    "rootCaCrl": "-----BEGIN X509 CRL-----...",
+    "tcbInfo": { "tcbInfo": {}, "signature": "..." },
+    "tcbSignChain": "-----BEGIN CERTIFICATE-----..."
   },
   "nvidia": {
     "crls": ["-----BEGIN X509 CRL-----..."],
@@ -160,7 +166,7 @@ The optional collateral bundle currently accepts a JSON object with these top-le
 }
 ```
 
-Only `intel.pckCrl` and `nvidia.crls` are actively consumed by the current build. Other fields are accepted so the interface is stable as the remaining collateral validation work lands.
+The current build actively consumes the Intel QE identity, TCB info, TCB signing chain, and CRLs when they are present. NVIDIA CRLs and certificate bundles are also consumed when supplied.
 
 ## Deployment Notes
 
@@ -179,7 +185,7 @@ Repository context:
 - This is a frontend-only Venice attestation verifier built with Vite, React, and TypeScript.
 - The main logic lives in src/lib/normalize.ts and src/lib/verifier.ts.
 - The app parses pasted/uploaded JSON attestation reports, normalizes them, runs deterministic local checks, and renders a verdict in the browser.
-- Current implementation performs local schema, binding, certificate, and Intel quote signature checks, but it still does not complete full NVIDIA raw-evidence verification or full Intel collateral validation; review whether the UI and code make that scope clear enough and whether any checks overclaim what they prove.
+- Current implementation performs local schema, binding, certificate, Intel collateral, and NVIDIA raw-evidence checks. Review whether any result can still overclaim authority, whether unsupported collateral-fetch cases are labeled clearly enough, and whether the remaining fixture gaps could hide end-to-end regressions.
 
 Your objectives:
 - Find bugs, security risks, misleading verification behavior, and incorrect assumptions.

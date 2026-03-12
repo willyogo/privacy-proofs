@@ -1,9 +1,31 @@
 import { bytesToHex, getAddress, hexToBytes, keccak256 } from "viem";
-import type { CheckResult, EvidenceDomain } from "./check-result";
+import type { CheckResult } from "./check-result";
+import { parseDerAt } from "./asn1";
 import { validateCertificateChain } from "./certificates";
-import { concatBytes, sha256Hex } from "./crypto";
+import {
+  concatBytes,
+  sha256Hex,
+  toArrayBuffer,
+  toHex,
+  verifyEcdsaSignature,
+} from "./crypto";
+import {
+  evaluateQeIdentity,
+  evaluateTcbInfo,
+  isCollateralCurrent,
+  parseIntelPckExtensions,
+  parseQeReport,
+  verifyIntelCollateralSignature,
+} from "./intel";
+import {
+  parseNvidiaEvidence,
+  normalizeNvidiaArchitecture,
+  verifyNvidiaEvidenceSignature,
+} from "./nvidia";
 import {
   asInfoBlock,
+  asIntelSignedQeIdentity,
+  asIntelSignedTcbInfo,
   asServerVerification,
   asTcbInfo,
   isRecord,
@@ -12,6 +34,7 @@ import type {
   CollateralBundle,
   CollateralStatus,
   CryptographicVerificationStatus,
+  EvidenceVerificationStatus,
   NormalizedAttestationReport,
   VerificationMode,
 } from "./types";
@@ -21,36 +44,51 @@ type VerificationAnalysis = {
   collateralStatus: CollateralStatus;
   cryptographicStatus: CryptographicVerificationStatus;
   derivedSigningAddress?: string;
+  evidenceStatus: {
+    intel: EvidenceVerificationStatus;
+    nvidia: EvidenceVerificationStatus;
+  };
   mode: VerificationMode;
   quoteReportData?: string;
   verifiedAt?: string;
 };
 
-const TDX_BODY_OFFSET = 48;
+type DomainVerificationResult = {
+  checks: CheckResult[];
+  fetchedCollateral: boolean;
+  status: EvidenceVerificationStatus;
+};
+
+const TDX_HEADER_LENGTH = 48;
 const TDX_REPORT_BODY_LENGTH = 584;
-const TDX_SIGNATURE_LENGTH_OFFSET = TDX_BODY_OFFSET + TDX_REPORT_BODY_LENGTH;
-const TDX_SIG_DATA_OFFSET = TDX_SIGNATURE_LENGTH_OFFSET + 4;
+const TDX_AUTH_DATA_LENGTH_OFFSET = TDX_HEADER_LENGTH + TDX_REPORT_BODY_LENGTH;
+const TDX_AUTH_DATA_OFFSET = TDX_AUTH_DATA_LENGTH_OFFSET + 4;
 const TDX_FIELD_LAYOUT = {
-  mrConfigId: { offset: 184, length: 48 },
-  mrOwner: { offset: 64, length: 48 },
-  mrOwnerConfig: { offset: 112, length: 48 },
-  mrtd: { offset: 136, length: 48 },
-  reportData: { offset: 520, length: 64 },
-  rtmr0: { offset: 328, length: 48 },
-  rtmr1: { offset: 376, length: 48 },
-  rtmr2: { offset: 424, length: 48 },
-  rtmr3: { offset: 472, length: 48 },
-  tdAttributes: { offset: 120, length: 8 },
-  xfam: { offset: 128, length: 8 },
+  mrConfigId: { length: 48, offset: 184 },
+  mrOwner: { length: 48, offset: 232 },
+  mrOwnerConfig: { length: 48, offset: 280 },
+  mrSeam: { length: 48, offset: 16 },
+  mrSignerSeam: { length: 48, offset: 64 },
+  mrtd: { length: 48, offset: 136 },
+  reportData: { length: 64, offset: 520 },
+  rtmr0: { length: 48, offset: 328 },
+  rtmr1: { length: 48, offset: 376 },
+  rtmr2: { length: 48, offset: 424 },
+  rtmr3: { length: 48, offset: 472 },
+  seamAttributes: { length: 8, offset: 112 },
+  tdAttributes: { length: 8, offset: 120 },
+  teeTcbSvn: { length: 16, offset: 0 },
+  xfam: { length: 8, offset: 128 },
 } as const;
 
 const TDX_QUOTE_SIGNATURE_LENGTH = 64;
 const TDX_ATTESTATION_KEY_LENGTH = 64;
-const TDX_QE_REPORT_PADDING_LENGTH = 6;
 const TDX_QE_REPORT_LENGTH = 384;
 const TDX_QE_REPORT_SIGNATURE_LENGTH = 64;
 const TDX_QE_REPORT_REPORT_DATA_OFFSET = 320;
 const TDX_QE_REPORT_REPORT_DATA_LENGTH = 64;
+const TDX_QE_REPORT_CERTIFICATION_DATA_TYPE = 6;
+const TDX_PCK_CERT_CHAIN_CERTIFICATION_DATA_TYPE = 5;
 
 type DecodedQuote = {
   attestationPublicKey?: Uint8Array;
@@ -59,7 +97,10 @@ type DecodedQuote = {
   mrConfigId: string;
   mrOwner: string;
   mrOwnerConfig: string;
+  mrSeam: string;
+  mrSignerSeam: string;
   mrtd: string;
+  outerCertificationDataType?: number;
   qeAuthData?: Uint8Array;
   qeReport?: Uint8Array;
   qeReportSignature?: Uint8Array;
@@ -71,7 +112,9 @@ type DecodedQuote = {
   rtmr1: string;
   rtmr2: string;
   rtmr3: string;
+  seamAttributes: string;
   tdAttributes: string;
+  teeTcbSvn: number[];
   version: number;
   xfam: string;
 };
@@ -86,9 +129,11 @@ export async function verifyNormalizedReport(
   let verifiedAt: string | undefined;
   let mode: VerificationMode = "offline";
   let collateralStatus: CollateralStatus = collateralBundle ? "provided" : "not-requested";
-  let cryptographicStatus: CryptographicVerificationStatus = "unsupported";
-  let hasLocalCryptoPass = false;
-  let hasFullCryptoPass = false;
+
+  const evidenceStatus: VerificationAnalysis["evidenceStatus"] = {
+    intel: "unsupported",
+    nvidia: "unsupported",
+  };
 
   const publicKey = normalizeHex(report.signing_public_key);
   const signingKey = normalizeHex(report.signing_key);
@@ -224,13 +269,12 @@ export async function verifyNormalizedReport(
     });
 
     checks.push(...appCertResult.checks);
-
-    if (appCertResult.fetchedCollateral) {
-      mode = "online";
-      collateralStatus = "fetched";
-    } else if (collateralStatus === "not-requested") {
-      collateralStatus = "missing";
-    }
+    ({ collateralStatus, mode } = updateCollateralTracking({
+      collateralStatus,
+      fetchedCollateral: appCertResult.fetchedCollateral,
+      mode,
+      providedBundle: false,
+    }));
   } else {
     checks.push(
       buildCheck({
@@ -298,17 +342,14 @@ export async function verifyNormalizedReport(
       quote,
     });
     checks.push(...tdxCryptoResult.checks);
+    evidenceStatus.intel = tdxCryptoResult.status;
 
-    if (tdxCryptoResult.fetchedCollateral) {
-      mode = "online";
-      collateralStatus = "fetched";
-    } else if (collateralBundle?.intel && collateralStatus !== "fetched") {
-      collateralStatus = "provided";
-    } else if (collateralStatus === "not-requested") {
-      collateralStatus = "missing";
-    }
-
-    hasLocalCryptoPass ||= tdxCryptoResult.localCryptoPass;
+    ({ collateralStatus, mode } = updateCollateralTracking({
+      collateralStatus,
+      fetchedCollateral: tdxCryptoResult.fetchedCollateral,
+      mode,
+      providedBundle: Boolean(collateralBundle?.intel),
+    }));
   } else {
     checks.push(
       buildCheck({
@@ -328,20 +369,18 @@ export async function verifyNormalizedReport(
   const nvidiaCryptoResult = await verifyNvidiaEvidence({
     collateralBundle,
     evidenceList,
+    expectedArch: normalizeNvidiaArchitecture(report.nvidia_payload.arch),
+    expectedNonce: nvidiaNonce,
   });
   checks.push(...nvidiaCryptoResult.checks);
+  evidenceStatus.nvidia = nvidiaCryptoResult.status;
 
-  if (nvidiaCryptoResult.fetchedCollateral) {
-    mode = "online";
-    collateralStatus = "fetched";
-  } else if (collateralBundle?.nvidia && collateralStatus !== "fetched") {
-    collateralStatus = "provided";
-  } else if (collateralStatus === "not-requested") {
-    collateralStatus = "missing";
-  }
-
-  hasLocalCryptoPass ||= nvidiaCryptoResult.localCryptoPass;
-  hasFullCryptoPass ||= nvidiaCryptoResult.fullCryptoPass;
+  ({ collateralStatus, mode } = updateCollateralTracking({
+    collateralStatus,
+    fetchedCollateral: nvidiaCryptoResult.fetchedCollateral,
+    mode,
+    providedBundle: Boolean(collateralBundle?.nvidia),
+  }));
 
   checks.push(...buildEventLogChecks(report));
   checks.push(...buildKeyProviderChecks(report));
@@ -350,17 +389,12 @@ export async function verifyNormalizedReport(
   checks.push(...serverClaims.checks);
   verifiedAt = serverClaims.verifiedAt;
 
-  if (hasFullCryptoPass) {
-    cryptographicStatus = "verified";
-  } else if (hasLocalCryptoPass) {
-    cryptographicStatus = "partial";
-  }
-
   return {
     checks,
     collateralStatus,
-    cryptographicStatus,
+    cryptographicStatus: deriveOverallCryptographicStatus(evidenceStatus),
     derivedSigningAddress,
+    evidenceStatus,
     mode,
     quoteReportData,
     verifiedAt,
@@ -423,8 +457,8 @@ function buildMeasurementChecks({
     buildCheck({
       description:
         composeHash &&
-        quote.mrConfigId.length >= 66 &&
-        quote.mrConfigId.slice(2, 66) === composeHash
+        quote.mrConfigId.length >= 64 &&
+        quote.mrConfigId.slice(0, 64) === composeHash
           ? "The quote MRCONFIGID embeds the reported compose hash."
           : "The quote MRCONFIGID does not embed the reported compose hash.",
       domain: "tdx",
@@ -435,8 +469,8 @@ function buildMeasurementChecks({
       source: "local",
       status:
         composeHash &&
-        quote.mrConfigId.length >= 66 &&
-        quote.mrConfigId.slice(2, 66) === composeHash
+        quote.mrConfigId.length >= 64 &&
+        quote.mrConfigId.slice(0, 64) === composeHash
           ? "pass"
           : "fail",
     }),
@@ -613,11 +647,7 @@ async function verifyTdxQuoteCryptography({
 }: {
   collateralBundle?: CollateralBundle;
   quote: DecodedQuote;
-}): Promise<{
-  checks: CheckResult[];
-  fetchedCollateral: boolean;
-  localCryptoPass: boolean;
-}> {
+}): Promise<DomainVerificationResult> {
   const checks: CheckResult[] = [];
 
   if (
@@ -645,14 +675,35 @@ async function verifyTdxQuoteCryptography({
     return {
       checks,
       fetchedCollateral: false,
-      localCryptoPass: false,
+      status: "unsupported",
     };
   }
 
   checks.push(
     buildCheck({
       description:
-        quote.certificationDataType === 5
+        quote.outerCertificationDataType === TDX_QE_REPORT_CERTIFICATION_DATA_TYPE
+          ? "The quote uses the expected QE report certification wrapper for TDX v4."
+          : `The quote uses unsupported outer certification data type ${String(
+              quote.outerCertificationDataType,
+            )}.`,
+      domain: "tdx",
+      id: "tdx-qe-report-certification-data",
+      jsonPath: "$.intel_quote",
+      label: "Inspect QE report certification wrapper",
+      severity: "blocking",
+      source: "local",
+      status:
+        quote.outerCertificationDataType === TDX_QE_REPORT_CERTIFICATION_DATA_TYPE
+          ? "pass"
+          : "fail",
+    }),
+  );
+
+  checks.push(
+    buildCheck({
+      description:
+        quote.certificationDataType === TDX_PCK_CERT_CHAIN_CERTIFICATION_DATA_TYPE
           ? "The quote includes an Intel PCK certificate chain in certification data type 5."
           : `The quote includes unsupported certification data type ${String(
               quote.certificationDataType,
@@ -663,24 +714,30 @@ async function verifyTdxQuoteCryptography({
       label: "Inspect quote certification data",
       severity: "blocking",
       source: "local",
-      status: quote.certificationDataType === 5 ? "pass" : "fail",
+      status:
+        quote.certificationDataType === TDX_PCK_CERT_CHAIN_CERTIFICATION_DATA_TYPE
+          ? "pass"
+          : "fail",
     }),
   );
 
   const chainResult = await validateCertificateChain({
     bundle: quote.certificationData,
     bundleLabel: "Intel PCK certificate chain",
-    collateralCrlPem: collateralBundle?.intel?.pckCrl,
+    collateralCrlPem: collateralBundle?.intel?.pckCrl ?? collateralBundle?.intel?.intermediateCaCrl,
     domain: "intel",
     jsonPath: "$.intel_quote",
   });
 
   checks.push(...chainResult.checks);
 
-  const localQuoteSignatureValid = await verifyP256Signature({
-    payload: quote.quoteBytes.slice(0, TDX_SIGNATURE_LENGTH_OFFSET),
+  const localQuoteSignatureValid = await verifyEcdsaSignature({
+    hash: "SHA-256",
+    namedCurve: "P-256",
+    payload: quote.quoteBytes.slice(0, TDX_AUTH_DATA_LENGTH_OFFSET),
     publicKey: quote.attestationPublicKey,
     signature: quote.quoteSignature,
+    signatureFormat: "ieee-p1363",
   });
 
   checks.push(
@@ -700,16 +757,21 @@ async function verifyTdxQuoteCryptography({
 
   let qeReportSignatureValid = false;
   if (chainResult.chain?.[0]) {
-    const pckPublicKey = await chainResult.chain[0].publicKey.export(
+    const pckPublicKey = await crypto.subtle.importKey(
+      "spki",
+      toArrayBuffer(new Uint8Array(chainResult.chain[0].publicKey.rawData)),
       { name: "ECDSA", namedCurve: "P-256" },
+      false,
       ["verify"],
     );
-    qeReportSignatureValid = await crypto.subtle.verify(
-      { name: "ECDSA", hash: "SHA-256" },
-      pckPublicKey,
-      toArrayBuffer(quote.qeReportSignature),
-      toArrayBuffer(quote.qeReport),
-    );
+    qeReportSignatureValid = await verifyEcdsaSignature({
+      hash: "SHA-256",
+      namedCurve: "P-256",
+      payload: quote.qeReport,
+      publicKey: pckPublicKey,
+      signature: quote.qeReportSignature,
+      signatureFormat: "ieee-p1363",
+    });
   }
 
   checks.push(
@@ -757,63 +819,423 @@ async function verifyTdxQuoteCryptography({
     }),
   );
 
-  const missingCollateral =
-    collateralBundle?.intel?.qeIdentity === undefined ||
-    collateralBundle?.intel?.tcbInfo === undefined;
+  const pckExtensions = chainResult.chain?.[0]
+    ? parseIntelPckExtensions(chainResult.chain[0])
+    : undefined;
 
   checks.push(
     buildCheck({
-      description: missingCollateral
-        ? "Intel QE identity and TCB collateral were not supplied, so TDX collateral validation remains partial."
-        : "Intel QE identity and TCB collateral were supplied for follow-on verification.",
+      description: pckExtensions
+        ? "The Intel PCK leaf certificate exposes the SGX/TDX extension values needed for TCB evaluation."
+        : "The Intel PCK leaf certificate is missing the SGX/TDX extension values needed for TCB evaluation.",
+      domain: "tdx",
+      id: "intel-pck-extensions",
+      jsonPath: "$.intel_quote",
+      label: "Parse Intel PCK extensions",
+      severity: "blocking",
+      source: "local",
+      status: pckExtensions ? "pass" : "fail",
+    }),
+  );
+
+  const baseCryptoPassed =
+    localQuoteSignatureValid &&
+    qeReportSignatureValid &&
+    qeReportDataMatches &&
+    pckExtensions !== undefined &&
+    !hasBlockingFailures(chainResult.checks);
+
+  const qeIdentity = asIntelSignedQeIdentity(collateralBundle?.intel?.qeIdentity);
+  const tcbInfo = asIntelSignedTcbInfo(collateralBundle?.intel?.tcbInfo);
+  const hasCollateralInputs = Boolean(
+    qeIdentity && tcbInfo && collateralBundle?.intel?.tcbSignChain,
+  );
+
+  checks.push(
+    buildCheck({
+      description: hasCollateralInputs
+        ? "Intel QE identity, TCB info, and the TCB signing chain were supplied for collateral verification."
+        : "Intel QE identity, TCB info, or the TCB signing chain are missing, so TDX collateral verification remains partial.",
       domain: "collateral",
-      id: "tdx-collateral-availability",
+      id: "intel-qe-identity-availability",
       jsonPath: "$.intel_quote",
       label: "Inspect Intel collateral availability",
       severity: "advisory",
       source: collateralBundle?.intel ? "local" : "online-collateral",
-      status: missingCollateral ? "info" : "pass",
+      status: hasCollateralInputs ? "pass" : "info",
     }),
   );
 
+  if (!hasCollateralInputs || !pckExtensions) {
+    return {
+      checks,
+      fetchedCollateral: chainResult.fetchedCollateral,
+      status: baseCryptoPassed ? "partial" : "unsupported",
+    };
+  }
+
+  const tcbChainResult = await validateCertificateChain({
+    bundle: collateralBundle!.intel!.tcbSignChain!,
+    bundleLabel: "Intel TCB signing chain",
+    collateralCrlPem: collateralBundle?.intel?.rootCaCrl,
+    domain: "intel",
+    jsonPath: "$.intel.tcbSignChain",
+  });
+  checks.push(...tcbChainResult.checks);
+
+  const tcbChainHealthy = !hasBlockingFailures(tcbChainResult.checks);
+  checks.push(
+    buildCheck({
+      description: tcbChainHealthy
+        ? "The Intel TCB signing chain validated for QE identity verification."
+        : "The Intel TCB signing chain did not validate for QE identity verification.",
+      domain: "tdx",
+      id: "intel-qe-identity-chain",
+      jsonPath: "$.intel.qeIdentity",
+      label: "Validate QE identity signing chain",
+      severity: "blocking",
+      source: "local",
+      status: tcbChainHealthy ? "pass" : "fail",
+    }),
+  );
+  checks.push(
+    buildCheck({
+      description: tcbChainHealthy
+        ? "The Intel TCB signing chain validated for TCB info verification."
+        : "The Intel TCB signing chain did not validate for TCB info verification.",
+      domain: "tdx",
+      id: "intel-tcb-info-chain",
+      jsonPath: "$.intel.tcbInfo",
+      label: "Validate TCB info signing chain",
+      severity: "blocking",
+      source: "local",
+      status: tcbChainHealthy ? "pass" : "fail",
+    }),
+  );
+
+  const qeIdentitySignatureValid =
+    tcbChainHealthy && tcbChainResult.chain
+      ? await verifyIntelCollateralSignature({
+          body: qeIdentity!.enclaveIdentity,
+          chain: tcbChainResult.chain,
+          signatureHex: qeIdentity!.signature,
+        })
+      : false;
+  const tcbInfoSignatureValid =
+    tcbChainHealthy && tcbChainResult.chain
+      ? await verifyIntelCollateralSignature({
+          body: tcbInfo!.tcbInfo,
+          chain: tcbChainResult.chain,
+          signatureHex: tcbInfo!.signature,
+        })
+      : false;
+
+  checks.push(
+    buildCheck({
+      description: qeIdentitySignatureValid
+        ? "The QE identity signature validates against the Intel TCB signing certificate."
+        : "The QE identity signature does not validate against the Intel TCB signing certificate.",
+      domain: "tdx",
+      id: "intel-qe-identity-signature",
+      jsonPath: "$.intel.qeIdentity",
+      label: "Verify QE identity signature",
+      severity: "blocking",
+      source: "local",
+      status: qeIdentitySignatureValid ? "pass" : "fail",
+    }),
+  );
+
+  checks.push(
+    buildCheck({
+      description: tcbInfoSignatureValid
+        ? "The TCB info signature validates against the Intel TCB signing certificate."
+        : "The TCB info signature does not validate against the Intel TCB signing certificate.",
+      domain: "tdx",
+      id: "intel-tcb-info-signature",
+      jsonPath: "$.intel.tcbInfo",
+      label: "Verify TCB info signature",
+      severity: "blocking",
+      source: "local",
+      status: tcbInfoSignatureValid ? "pass" : "fail",
+    }),
+  );
+
+  const qeIdentityCurrent = isCollateralCurrent(qeIdentity!.enclaveIdentity);
+  const tcbInfoCurrent = isCollateralCurrent(tcbInfo!.tcbInfo);
+
+  checks.push(
+    buildCheck({
+      description: qeIdentityCurrent
+        ? "The QE identity collateral is within its issueDate/nextUpdate validity window."
+        : "The QE identity collateral is outside its issueDate/nextUpdate validity window.",
+      domain: "tdx",
+      id: "intel-qe-identity-validity",
+      jsonPath: "$.intel.qeIdentity",
+      label: "Check QE identity validity window",
+      severity: "blocking",
+      source: "local",
+      status: qeIdentityCurrent ? "pass" : "fail",
+    }),
+  );
+
+  checks.push(
+    buildCheck({
+      description: tcbInfoCurrent
+        ? "The TCB info collateral is within its issueDate/nextUpdate validity window."
+        : "The TCB info collateral is outside its issueDate/nextUpdate validity window.",
+      domain: "tdx",
+      id: "intel-tcb-info-validity",
+      jsonPath: "$.intel.tcbInfo",
+      label: "Check TCB info validity window",
+      severity: "blocking",
+      source: "local",
+      status: tcbInfoCurrent ? "pass" : "fail",
+    }),
+  );
+
+  const qeReport = parseQeReport(quote.qeReport);
+  checks.push(
+    buildCheck({
+      description: qeReport
+        ? "The QE report parsed successfully for QE identity evaluation."
+        : "The QE report could not be parsed for QE identity evaluation.",
+      domain: "tdx",
+      id: "intel-qe-report-parse",
+      jsonPath: "$.intel_quote",
+      label: "Parse QE report fields",
+      severity: "blocking",
+      source: "local",
+      status: qeReport ? "pass" : "fail",
+    }),
+  );
+
+  if (!qeReport) {
+    return {
+      checks,
+      fetchedCollateral: chainResult.fetchedCollateral || tcbChainResult.fetchedCollateral,
+      status: baseCryptoPassed ? "partial" : "unsupported",
+    };
+  }
+
+  const qeIdentityEvaluation = evaluateQeIdentity({
+    qeIdentity: qeIdentity!.enclaveIdentity,
+    qeReport,
+  });
+
+  checks.push(
+    buildCheck({
+      description: qeIdentityEvaluation.miscselectMatch
+        ? "The QE report miscselect satisfies the QE identity policy mask."
+        : "The QE report miscselect does not satisfy the QE identity policy mask.",
+      domain: "tdx",
+      id: "intel-qe-miscselect",
+      jsonPath: "$.intel.qeIdentity",
+      label: "Check QE miscselect policy",
+      severity: "blocking",
+      source: "local",
+      status: qeIdentityEvaluation.miscselectMatch ? "pass" : "fail",
+    }),
+  );
+
+  checks.push(
+    buildCheck({
+      description: qeIdentityEvaluation.attributesMatch
+        ? "The QE report attributes satisfy the QE identity policy mask."
+        : "The QE report attributes do not satisfy the QE identity policy mask.",
+      domain: "tdx",
+      id: "intel-qe-attributes",
+      jsonPath: "$.intel.qeIdentity",
+      label: "Check QE attributes policy",
+      severity: "blocking",
+      source: "local",
+      status: qeIdentityEvaluation.attributesMatch ? "pass" : "fail",
+    }),
+  );
+
+  checks.push(
+    buildCheck({
+      description: qeIdentityEvaluation.mrsignerMatch
+        ? "The QE report MRSIGNER matches the QE identity collateral."
+        : "The QE report MRSIGNER does not match the QE identity collateral.",
+      domain: "tdx",
+      id: "intel-qe-mrsigner",
+      jsonPath: "$.intel.qeIdentity",
+      label: "Check QE MRSIGNER binding",
+      severity: "blocking",
+      source: "local",
+      status: qeIdentityEvaluation.mrsignerMatch ? "pass" : "fail",
+    }),
+  );
+
+  checks.push(
+    buildCheck({
+      description: qeIdentityEvaluation.isvprodidMatch
+        ? "The QE report ISV product ID matches the QE identity collateral."
+        : "The QE report ISV product ID does not match the QE identity collateral.",
+      domain: "tdx",
+      id: "intel-qe-isvprodid",
+      jsonPath: "$.intel.qeIdentity",
+      label: "Check QE ISV product ID",
+      severity: "blocking",
+      source: "local",
+      status: qeIdentityEvaluation.isvprodidMatch ? "pass" : "fail",
+    }),
+  );
+
+  checks.push(
+    buildCheck({
+      description: qeIdentityEvaluation.status
+        ? `The QE identity selected status ${qeIdentityEvaluation.status} for the QE report ISV SVN.`
+        : "The QE identity collateral did not contain a matching TCB level for the QE report ISV SVN.",
+      domain: "tdx",
+      id: "intel-qe-isvsvn-status",
+      jsonPath: "$.intel.qeIdentity",
+      label: "Evaluate QE ISV SVN status",
+      severity: "blocking",
+      source: "local",
+      status: qeIdentityEvaluation.status === "UpToDate" ? "pass" : "fail",
+    }),
+  );
+
+  const tcbEvaluation = evaluateTcbInfo({
+    pckExtensions,
+    quoteMrSignerSeam: quote.mrSignerSeam,
+    quoteSeamAttributes: quote.seamAttributes,
+    quoteTeeTcbSvn: quote.teeTcbSvn,
+    tcbInfo: tcbInfo!.tcbInfo,
+  });
+
+  checks.push(
+    buildCheck({
+      description: tcbEvaluation.fmspcMatch
+        ? "The PCK certificate FMSPC matches the Intel TCB info collateral."
+        : "The PCK certificate FMSPC does not match the Intel TCB info collateral.",
+      domain: "tdx",
+      id: "intel-pck-fmspc",
+      jsonPath: "$.intel.tcbInfo",
+      label: "Check Intel FMSPC binding",
+      severity: "blocking",
+      source: "local",
+      status: tcbEvaluation.fmspcMatch ? "pass" : "fail",
+    }),
+  );
+
+  checks.push(
+    buildCheck({
+      description: tcbEvaluation.pceIdMatch
+        ? "The PCK certificate PCE ID matches the Intel TCB info collateral."
+        : "The PCK certificate PCE ID does not match the Intel TCB info collateral.",
+      domain: "tdx",
+      id: "intel-pck-pceid",
+      jsonPath: "$.intel.tcbInfo",
+      label: "Check Intel PCE ID binding",
+      severity: "blocking",
+      source: "local",
+      status: tcbEvaluation.pceIdMatch ? "pass" : "fail",
+    }),
+  );
+
+  checks.push(
+    buildCheck({
+      description: tcbEvaluation.tdxModuleMrsignerMatch
+        ? "The quote TDX module signer matches the Intel TCB info collateral."
+        : "The quote TDX module signer does not match the Intel TCB info collateral.",
+      domain: "tdx",
+      id: "intel-tdx-module-mrsigner",
+      jsonPath: "$.intel.tcbInfo",
+      label: "Check TDX module signer",
+      severity: "blocking",
+      source: "local",
+      status: tcbEvaluation.tdxModuleMrsignerMatch ? "pass" : "fail",
+    }),
+  );
+
+  checks.push(
+    buildCheck({
+      description: tcbEvaluation.tdxModuleAttributesMatch
+        ? "The quote SEAM attributes satisfy the Intel TCB module attribute mask."
+        : "The quote SEAM attributes do not satisfy the Intel TCB module attribute mask.",
+      domain: "tdx",
+      id: "intel-tdx-module-attributes",
+      jsonPath: "$.intel.tcbInfo",
+      label: "Check TDX module attributes",
+      severity: "blocking",
+      source: "local",
+      status: tcbEvaluation.tdxModuleAttributesMatch ? "pass" : "fail",
+    }),
+  );
+
+  checks.push(
+    buildCheck({
+      description: tcbEvaluation.levelMatch
+        ? "The quote and PCK TCB values matched a TCB level in the Intel collateral."
+        : "The quote and PCK TCB values did not match any TCB level in the Intel collateral.",
+      domain: "tdx",
+      id: "intel-tcb-level-match",
+      jsonPath: "$.intel.tcbInfo",
+      label: "Match Intel TCB level",
+      severity: "blocking",
+      source: "local",
+      status: tcbEvaluation.levelMatch ? "pass" : "fail",
+    }),
+  );
+
+  checks.push(
+    buildCheck({
+      description: tcbEvaluation.status
+        ? `The matched Intel TCB level produced status ${tcbEvaluation.status}.`
+        : "The Intel TCB info did not yield an acceptable TCB status for this quote.",
+      domain: "tdx",
+      id: "intel-tcb-status",
+      jsonPath: "$.intel.tcbInfo",
+      label: "Evaluate Intel TCB status",
+      severity: "blocking",
+      source: "local",
+      status: tcbEvaluation.status === "UpToDate" ? "pass" : "fail",
+    }),
+  );
+
+  const fullVerificationPassed =
+    baseCryptoPassed &&
+    tcbChainHealthy &&
+    qeIdentitySignatureValid &&
+    tcbInfoSignatureValid &&
+    qeIdentityCurrent &&
+    tcbInfoCurrent &&
+    qeIdentityEvaluation.acceptable &&
+    tcbEvaluation.acceptable;
+
   return {
     checks,
-    fetchedCollateral: chainResult.fetchedCollateral,
-    localCryptoPass:
-      localQuoteSignatureValid &&
-      qeReportSignatureValid &&
-      qeReportDataMatches &&
-      !chainResult.checks.some(
-        (check) => check.severity === "blocking" && check.status === "fail",
-      ),
+    fetchedCollateral: chainResult.fetchedCollateral || tcbChainResult.fetchedCollateral,
+    status: fullVerificationPassed ? "verified" : baseCryptoPassed ? "partial" : "unsupported",
   };
 }
 
 async function verifyNvidiaEvidence({
   collateralBundle,
   evidenceList,
+  expectedArch,
+  expectedNonce,
 }: {
   collateralBundle?: CollateralBundle;
   evidenceList: NormalizedAttestationReport["nvidia_payload"]["evidence_list"];
-}): Promise<{
-  checks: CheckResult[];
-  fetchedCollateral: boolean;
-  fullCryptoPass: boolean;
-  localCryptoPass: boolean;
-}> {
+  expectedArch?: string;
+  expectedNonce?: string;
+}): Promise<DomainVerificationResult> {
   const checks: CheckResult[] = [];
 
   if (evidenceList.length === 0) {
     return {
       checks,
       fetchedCollateral: false,
-      fullCryptoPass: false,
-      localCryptoPass: false,
+      status: "unsupported",
     };
   }
 
   let fetchedCollateral = false;
-  let certificateChainsPassed = true;
+  let everyEntryVerified = true;
+  let anyEntryParsed = false;
 
   for (const [index, entry] of evidenceList.entries()) {
     const certificatePem = decodeBase64Utf8(entry.certificate);
@@ -827,15 +1249,12 @@ async function verifyNvidiaEvidence({
 
     checks.push(...chainResult.checks);
     fetchedCollateral ||= chainResult.fetchedCollateral;
-    certificateChainsPassed &&=
-      !chainResult.checks.some(
-        (check) => check.severity === "blocking" && check.status === "fail",
-      );
 
+    const evidenceBytes = normalizeBase64(entry.evidence);
     checks.push(
       buildCheck({
         description:
-          normalizeBase64(entry.evidence) !== undefined
+          evidenceBytes !== undefined
             ? "The NVIDIA evidence blob is present and decodes from base64."
             : "The NVIDIA evidence blob is missing or not valid base64.",
         domain: "nvidia",
@@ -844,30 +1263,158 @@ async function verifyNvidiaEvidence({
         label: "Decode NVIDIA evidence blob",
         severity: "blocking",
         source: "local",
-        status: normalizeBase64(entry.evidence) !== undefined ? "pass" : "fail",
+        status: evidenceBytes !== undefined ? "pass" : "fail",
       }),
     );
-  }
 
-  checks.push(
-    buildCheck({
-      description:
-        "This build validates NVIDIA certificate chains but does not yet re-derive raw NVIDIA evidence signatures from the opaque evidence blob format.",
-      domain: "nvidia",
-      id: "nvidia-raw-evidence-unsupported",
-      jsonPath: "$.nvidia_payload.evidence_list",
-      label: "Inspect NVIDIA raw evidence support",
-      severity: "advisory",
-      source: "local",
-      status: "info",
-    }),
-  );
+    const leafCertificate = chainResult.chain?.[0];
+    const parsedEvidence =
+      evidenceBytes && leafCertificate
+        ? parseNvidiaEvidence({
+            arch: entry.arch,
+            evidence: evidenceBytes,
+            leafCertificate,
+          })
+        : undefined;
+
+    checks.push(
+      buildCheck({
+        description: parsedEvidence
+          ? "The NVIDIA evidence blob parsed successfully as request, response, opaque data, and signature sections."
+          : "The NVIDIA evidence blob did not parse as a supported NVIDIA SPDM evidence structure.",
+        domain: "nvidia",
+        id: `nvidia-evidence-parse-${index}`,
+        jsonPath: `$.nvidia_payload.evidence_list[${index}].evidence`,
+        label: "Parse NVIDIA raw evidence",
+        severity: "blocking",
+        source: "local",
+        status: parsedEvidence ? "pass" : "fail",
+      }),
+    );
+
+    if (!parsedEvidence || !leafCertificate) {
+      everyEntryVerified = false;
+      continue;
+    }
+
+    anyEntryParsed = true;
+
+    const signatureValid = await verifyNvidiaEvidenceSignature({
+      leafCertificate,
+      signature: parsedEvidence.signature,
+      signedBytes: parsedEvidence.signedBytes,
+    });
+
+    checks.push(
+      buildCheck({
+        description: signatureValid
+          ? "The NVIDIA raw evidence signature validates against the leaf certificate public key."
+          : "The NVIDIA raw evidence signature does not validate against the leaf certificate public key.",
+        domain: "nvidia",
+        id: `nvidia-evidence-signature-${index}`,
+        jsonPath: `$.nvidia_payload.evidence_list[${index}].evidence`,
+        label: "Verify NVIDIA evidence signature",
+        severity: "blocking",
+        source: "local",
+        status: signatureValid ? "pass" : "fail",
+      }),
+    );
+
+    const nonceMatches = Boolean(expectedNonce && parsedEvidence.requestNonce === expectedNonce);
+    checks.push(
+      buildCheck({
+        description: nonceMatches
+          ? "The NVIDIA evidence request nonce matches the attestation report nonce."
+          : "The NVIDIA evidence request nonce does not match the attestation report nonce.",
+        domain: "nvidia",
+        id: `nvidia-evidence-request-nonce-${index}`,
+        jsonPath: `$.nvidia_payload.evidence_list[${index}].evidence`,
+        label: "Check NVIDIA evidence nonce binding",
+        severity: "blocking",
+        source: "local",
+        status: nonceMatches ? "pass" : "fail",
+      }),
+    );
+
+    const actualArch = normalizeNvidiaArchitecture(entry.arch ?? parsedEvidence.arch);
+    const archMatches =
+      expectedArch !== undefined ? actualArch === expectedArch : actualArch !== undefined;
+
+    checks.push(
+      buildCheck({
+        description: archMatches
+          ? "The NVIDIA evidence architecture matches the reported NVIDIA payload architecture."
+          : "The NVIDIA evidence architecture does not match the reported NVIDIA payload architecture.",
+        domain: "nvidia",
+        id: `nvidia-evidence-arch-${index}`,
+        jsonPath: `$.nvidia_payload.evidence_list[${index}].arch`,
+        label: "Check NVIDIA architecture binding",
+        severity: "blocking",
+        source: "local",
+        status: archMatches ? "pass" : "fail",
+      }),
+    );
+
+    const fwidMatches =
+      parsedEvidence.evidenceFwid !== undefined &&
+      parsedEvidence.leafCertificateFwid !== undefined &&
+      parsedEvidence.evidenceFwid === parsedEvidence.leafCertificateFwid;
+
+    checks.push(
+      buildCheck({
+        description: fwidMatches
+          ? "The NVIDIA FWID extracted from opaque evidence matches the device certificate FWID."
+          : "The NVIDIA FWID extracted from opaque evidence does not match the device certificate FWID.",
+        domain: "nvidia",
+        id: `nvidia-evidence-fwid-${index}`,
+        jsonPath: `$.nvidia_payload.evidence_list[${index}].evidence`,
+        label: "Check NVIDIA FWID binding",
+        severity: "blocking",
+        source: "local",
+        status: fwidMatches ? "pass" : "fail",
+      }),
+    );
+
+    const opaqueVersionSupported =
+      parsedEvidence.opaqueDataVersion === undefined ||
+      parsedEvidence.opaqueDataVersion <= 1;
+    checks.push(
+      buildCheck({
+        description:
+          parsedEvidence.opaqueDataVersion === undefined
+            ? "The NVIDIA evidence did not expose an opaque-data version field."
+            : opaqueVersionSupported
+              ? `The NVIDIA evidence opaque-data version ${parsedEvidence.opaqueDataVersion} is supported.`
+              : `The NVIDIA evidence opaque-data version ${parsedEvidence.opaqueDataVersion} is not supported.`,
+        domain: "nvidia",
+        id: `nvidia-evidence-opaque-version-${index}`,
+        jsonPath: `$.nvidia_payload.evidence_list[${index}].evidence`,
+        label: "Inspect NVIDIA opaque-data version",
+        severity: "blocking",
+        source: "local",
+        status:
+          parsedEvidence.opaqueDataVersion === undefined || opaqueVersionSupported
+            ? "pass"
+            : "fail",
+      }),
+    );
+
+    if (
+      hasBlockingFailures(chainResult.checks) ||
+      !signatureValid ||
+      !nonceMatches ||
+      !archMatches ||
+      !fwidMatches ||
+      !opaqueVersionSupported
+    ) {
+      everyEntryVerified = false;
+    }
+  }
 
   return {
     checks,
     fetchedCollateral,
-    fullCryptoPass: false,
-    localCryptoPass: certificateChainsPassed,
+    status: everyEntryVerified && anyEntryParsed ? "verified" : anyEntryParsed ? "partial" : "unsupported",
   };
 }
 
@@ -987,7 +1534,7 @@ function evaluateEmbeddedClaims(
   };
 }
 
-function decodeTdxQuote(value: unknown): DecodedQuote | undefined {
+export function decodeTdxQuote(value: unknown): DecodedQuote | undefined {
   const quoteHex = normalizeHex(value);
   if (!quoteHex) {
     return undefined;
@@ -995,7 +1542,7 @@ function decodeTdxQuote(value: unknown): DecodedQuote | undefined {
 
   try {
     const quoteBytes = hexToBytes(`0x${quoteHex}`);
-    if (quoteBytes.length < TDX_SIG_DATA_OFFSET) {
+    if (quoteBytes.length < TDX_AUTH_DATA_OFFSET) {
       return undefined;
     }
 
@@ -1004,97 +1551,195 @@ function decodeTdxQuote(value: unknown): DecodedQuote | undefined {
       quoteBytes.byteOffset,
       quoteBytes.byteLength,
     );
-    const signatureDataLength = view.getUint32(TDX_SIGNATURE_LENGTH_OFFSET, true);
-    if (quoteBytes.length < TDX_SIG_DATA_OFFSET + signatureDataLength) {
+    const authDataLength = view.getUint32(TDX_AUTH_DATA_LENGTH_OFFSET, true);
+    if (quoteBytes.length < TDX_AUTH_DATA_OFFSET + authDataLength) {
       return undefined;
     }
 
-    const signatureData = quoteBytes.slice(
-      TDX_SIG_DATA_OFFSET,
-      TDX_SIG_DATA_OFFSET + signatureDataLength,
+    const authData = quoteBytes.slice(
+      TDX_AUTH_DATA_OFFSET,
+      TDX_AUTH_DATA_OFFSET + authDataLength,
     );
+    if (authData.length < TDX_QUOTE_SIGNATURE_LENGTH + TDX_ATTESTATION_KEY_LENGTH + 6) {
+      return undefined;
+    }
 
-    const quoteSignature = signatureData.slice(0, TDX_QUOTE_SIGNATURE_LENGTH);
-    const attestationPublicKey = signatureData.slice(
-      TDX_QUOTE_SIGNATURE_LENGTH,
-      TDX_QUOTE_SIGNATURE_LENGTH + TDX_ATTESTATION_KEY_LENGTH,
+    let offset = 0;
+    const quoteSignature = authData.slice(offset, offset + TDX_QUOTE_SIGNATURE_LENGTH);
+    offset += TDX_QUOTE_SIGNATURE_LENGTH;
+    const attestationPublicKey = authData.slice(
+      offset,
+      offset + TDX_ATTESTATION_KEY_LENGTH,
     );
-    const qeReportStart =
-      TDX_QUOTE_SIGNATURE_LENGTH +
-      TDX_ATTESTATION_KEY_LENGTH +
-      TDX_QE_REPORT_PADDING_LENGTH;
-    const qeReport = signatureData.slice(
-      qeReportStart,
-      qeReportStart + TDX_QE_REPORT_LENGTH,
+    offset += TDX_ATTESTATION_KEY_LENGTH;
+
+    const outerCertificationDataType = new DataView(
+      authData.buffer,
+      authData.byteOffset,
+      authData.byteLength,
+    ).getUint16(offset, true);
+    const outerCertificationDataSize = new DataView(
+      authData.buffer,
+      authData.byteOffset,
+      authData.byteLength,
+    ).getUint32(offset + 2, true);
+    offset += 6;
+
+    if (offset + outerCertificationDataSize > authData.length) {
+      return undefined;
+    }
+
+    const outerCertificationData = authData.slice(
+      offset,
+      offset + outerCertificationDataSize,
     );
-    const qeReportSignatureOffset = qeReportStart + TDX_QE_REPORT_LENGTH;
-    const qeReportSignature = signatureData.slice(
-      qeReportSignatureOffset,
-      qeReportSignatureOffset + TDX_QE_REPORT_SIGNATURE_LENGTH,
+    if (outerCertificationData.length < TDX_QE_REPORT_LENGTH + TDX_QE_REPORT_SIGNATURE_LENGTH + 8) {
+      return undefined;
+    }
+
+    let certOffset = 0;
+    const qeReport = outerCertificationData.slice(
+      certOffset,
+      certOffset + TDX_QE_REPORT_LENGTH,
     );
-    const authSizeOffset = qeReportSignatureOffset + TDX_QE_REPORT_SIGNATURE_LENGTH;
-    const authSize = new DataView(
-      signatureData.buffer,
-      signatureData.byteOffset,
-      signatureData.byteLength,
-    ).getUint16(authSizeOffset, true);
-    const authDataOffset = authSizeOffset + 2;
-    const authData = signatureData.slice(authDataOffset, authDataOffset + authSize);
-    const certificationHeaderOffset = authDataOffset + authSize;
+    certOffset += TDX_QE_REPORT_LENGTH;
+    const qeReportSignature = outerCertificationData.slice(
+      certOffset,
+      certOffset + TDX_QE_REPORT_SIGNATURE_LENGTH,
+    );
+    certOffset += TDX_QE_REPORT_SIGNATURE_LENGTH;
+
+    const qeAuthDataSize = new DataView(
+      outerCertificationData.buffer,
+      outerCertificationData.byteOffset,
+      outerCertificationData.byteLength,
+    ).getUint16(certOffset, true);
+    certOffset += 2;
+    const qeAuthData = outerCertificationData.slice(
+      certOffset,
+      certOffset + qeAuthDataSize,
+    );
+    certOffset += qeAuthDataSize;
+
+    if (certOffset + 6 > outerCertificationData.length) {
+      return undefined;
+    }
+
     const certificationDataType = new DataView(
-      signatureData.buffer,
-      signatureData.byteOffset,
-      signatureData.byteLength,
-    ).getUint16(certificationHeaderOffset, true);
+      outerCertificationData.buffer,
+      outerCertificationData.byteOffset,
+      outerCertificationData.byteLength,
+    ).getUint16(certOffset, true);
     const certificationDataSize = new DataView(
-      signatureData.buffer,
-      signatureData.byteOffset,
-      signatureData.byteLength,
-    ).getUint32(certificationHeaderOffset + 2, true);
-    const certificationData = signatureData.slice(
-      certificationHeaderOffset + 6,
-      certificationHeaderOffset + 6 + certificationDataSize,
+      outerCertificationData.buffer,
+      outerCertificationData.byteOffset,
+      outerCertificationData.byteLength,
+    ).getUint32(certOffset + 2, true);
+    certOffset += 6;
+
+    if (certOffset + certificationDataSize > outerCertificationData.length) {
+      return undefined;
+    }
+
+    const certificationData = outerCertificationData.slice(
+      certOffset,
+      certOffset + certificationDataSize,
     );
 
     return {
       attestationPublicKey,
-      certificationData: new TextDecoder().decode(certificationData),
+      certificationData: decodeCertificationDataBundle(certificationData),
       certificationDataType,
       mrConfigId: extractQuoteField(
         quoteBytes,
         TDX_FIELD_LAYOUT.mrConfigId.offset,
-        48,
+        TDX_FIELD_LAYOUT.mrConfigId.length,
       ),
-      mrOwner: extractQuoteField(quoteBytes, TDX_FIELD_LAYOUT.mrOwner.offset, 48),
+      mrOwner: extractQuoteField(
+        quoteBytes,
+        TDX_FIELD_LAYOUT.mrOwner.offset,
+        TDX_FIELD_LAYOUT.mrOwner.length,
+      ),
       mrOwnerConfig: extractQuoteField(
         quoteBytes,
         TDX_FIELD_LAYOUT.mrOwnerConfig.offset,
-        48,
+        TDX_FIELD_LAYOUT.mrOwnerConfig.length,
       ),
-      mrtd: extractQuoteField(quoteBytes, TDX_FIELD_LAYOUT.mrtd.offset, 48),
-      qeAuthData: authData,
+      mrSeam: extractQuoteField(
+        quoteBytes,
+        TDX_FIELD_LAYOUT.mrSeam.offset,
+        TDX_FIELD_LAYOUT.mrSeam.length,
+      ),
+      mrSignerSeam: extractQuoteField(
+        quoteBytes,
+        TDX_FIELD_LAYOUT.mrSignerSeam.offset,
+        TDX_FIELD_LAYOUT.mrSignerSeam.length,
+      ),
+      mrtd: extractQuoteField(
+        quoteBytes,
+        TDX_FIELD_LAYOUT.mrtd.offset,
+        TDX_FIELD_LAYOUT.mrtd.length,
+      ),
+      outerCertificationDataType,
+      qeAuthData,
       qeReport,
       qeReportSignature,
       quoteBytes,
-      quoteReportData: bytesToHex(
+      quoteReportData: toHex(
         qeReport.slice(
           TDX_QE_REPORT_REPORT_DATA_OFFSET,
           TDX_QE_REPORT_REPORT_DATA_OFFSET + TDX_QE_REPORT_REPORT_DATA_LENGTH,
         ),
-      ).slice(2),
+      ),
       quoteSignature,
-      reportData: extractQuoteField(quoteBytes, TDX_FIELD_LAYOUT.reportData.offset, 64),
-      rtmr0: extractQuoteField(quoteBytes, TDX_FIELD_LAYOUT.rtmr0.offset, 48),
-      rtmr1: extractQuoteField(quoteBytes, TDX_FIELD_LAYOUT.rtmr1.offset, 48),
-      rtmr2: extractQuoteField(quoteBytes, TDX_FIELD_LAYOUT.rtmr2.offset, 48),
-      rtmr3: extractQuoteField(quoteBytes, TDX_FIELD_LAYOUT.rtmr3.offset, 48),
+      reportData: extractQuoteField(
+        quoteBytes,
+        TDX_FIELD_LAYOUT.reportData.offset,
+        TDX_FIELD_LAYOUT.reportData.length,
+      ),
+      rtmr0: extractQuoteField(
+        quoteBytes,
+        TDX_FIELD_LAYOUT.rtmr0.offset,
+        TDX_FIELD_LAYOUT.rtmr0.length,
+      ),
+      rtmr1: extractQuoteField(
+        quoteBytes,
+        TDX_FIELD_LAYOUT.rtmr1.offset,
+        TDX_FIELD_LAYOUT.rtmr1.length,
+      ),
+      rtmr2: extractQuoteField(
+        quoteBytes,
+        TDX_FIELD_LAYOUT.rtmr2.offset,
+        TDX_FIELD_LAYOUT.rtmr2.length,
+      ),
+      rtmr3: extractQuoteField(
+        quoteBytes,
+        TDX_FIELD_LAYOUT.rtmr3.offset,
+        TDX_FIELD_LAYOUT.rtmr3.length,
+      ),
+      seamAttributes: extractQuoteField(
+        quoteBytes,
+        TDX_FIELD_LAYOUT.seamAttributes.offset,
+        TDX_FIELD_LAYOUT.seamAttributes.length,
+      ),
       tdAttributes: extractQuoteField(
         quoteBytes,
         TDX_FIELD_LAYOUT.tdAttributes.offset,
-        8,
+        TDX_FIELD_LAYOUT.tdAttributes.length,
+      ),
+      teeTcbSvn: Array.from(
+        extractQuoteFieldBytes(
+          quoteBytes,
+          TDX_FIELD_LAYOUT.teeTcbSvn.offset,
+          TDX_FIELD_LAYOUT.teeTcbSvn.length,
+        ),
       ),
       version: view.getUint16(0, true),
-      xfam: extractQuoteField(quoteBytes, TDX_FIELD_LAYOUT.xfam.offset, 8),
+      xfam: extractQuoteField(
+        quoteBytes,
+        TDX_FIELD_LAYOUT.xfam.offset,
+        TDX_FIELD_LAYOUT.xfam.length,
+      ),
     };
   } catch {
     return undefined;
@@ -1106,9 +1751,17 @@ function extractQuoteField(
   offset: number,
   length: number,
 ): string {
-  return bytesToHex(
-    bytes.slice(TDX_BODY_OFFSET + offset, TDX_BODY_OFFSET + offset + length),
-  ).slice(2);
+  return toHex(
+    bytes.slice(TDX_HEADER_LENGTH + offset, TDX_HEADER_LENGTH + offset + length),
+  );
+}
+
+function extractQuoteFieldBytes(
+  bytes: Uint8Array,
+  offset: number,
+  length: number,
+): Uint8Array {
+  return bytes.slice(TDX_HEADER_LENGTH + offset, TDX_HEADER_LENGTH + offset + length);
 }
 
 function collectNamedEventPayloads(
@@ -1207,40 +1860,89 @@ function parseJsonObject(value: unknown): Record<string, unknown> | undefined {
   }
 }
 
-async function verifyP256Signature({
-  payload,
-  publicKey,
-  signature,
-}: {
-  payload: Uint8Array;
-  publicKey: Uint8Array;
-  signature: Uint8Array;
-}): Promise<boolean> {
-  try {
-    const cryptoKey = await crypto.subtle.importKey(
-      "raw",
-      toArrayBuffer(concatBytes(new Uint8Array([4]), publicKey)),
-      { name: "ECDSA", namedCurve: "P-256" },
-      false,
-      ["verify"],
-    );
-
-    return await crypto.subtle.verify(
-      { name: "ECDSA", hash: "SHA-256" },
-      cryptoKey,
-      toArrayBuffer(signature),
-      toArrayBuffer(payload),
-    );
-  } catch {
-    return false;
+function deriveOverallCryptographicStatus(evidenceStatus: {
+  intel: EvidenceVerificationStatus;
+  nvidia: EvidenceVerificationStatus;
+}): CryptographicVerificationStatus {
+  if (evidenceStatus.intel === "verified" && evidenceStatus.nvidia === "verified") {
+    return "verified";
   }
+
+  if (evidenceStatus.intel !== "unsupported" || evidenceStatus.nvidia !== "unsupported") {
+    return "partial";
+  }
+
+  return "unsupported";
 }
 
-function toArrayBuffer(value: Uint8Array): ArrayBuffer {
-  return value.buffer.slice(
-    value.byteOffset,
-    value.byteOffset + value.byteLength,
-  ) as ArrayBuffer;
+function decodeCertificationDataBundle(bytes: Uint8Array): string {
+  const text = new TextDecoder().decode(bytes);
+  if (text.includes("BEGIN CERTIFICATE")) {
+    return text;
+  }
+
+  const certificates: string[] = [];
+  let offset = 0;
+
+  while (offset < bytes.length) {
+    const parsed = parseDerAt(bytes, offset);
+    certificates.push(toPemCertificate(bytes.slice(offset, parsed.nextOffset)));
+    offset = parsed.nextOffset;
+  }
+
+  return certificates.reverse().join("\n");
+}
+
+function toPemCertificate(derBytes: Uint8Array): string {
+  const base64 = btoa(
+    String.fromCharCode(...derBytes),
+  ).match(/.{1,64}/g)?.join("\n");
+
+  return `-----BEGIN CERTIFICATE-----\n${base64 ?? ""}\n-----END CERTIFICATE-----`;
+}
+
+function updateCollateralTracking({
+  collateralStatus,
+  fetchedCollateral,
+  mode,
+  providedBundle,
+}: {
+  collateralStatus: CollateralStatus;
+  fetchedCollateral: boolean;
+  mode: VerificationMode;
+  providedBundle: boolean;
+}): { collateralStatus: CollateralStatus; mode: VerificationMode } {
+  if (fetchedCollateral) {
+    return {
+      collateralStatus: "fetched",
+      mode: "online",
+    };
+  }
+
+  if (providedBundle && collateralStatus !== "fetched") {
+    return {
+      collateralStatus: "provided",
+      mode,
+    };
+  }
+
+  if (collateralStatus === "not-requested") {
+    return {
+      collateralStatus: "missing",
+      mode,
+    };
+  }
+
+  return {
+    collateralStatus,
+    mode,
+  };
+}
+
+function hasBlockingFailures(checks: CheckResult[]): boolean {
+  return checks.some(
+    (check) => check.severity === "blocking" && check.status === "fail",
+  );
 }
 
 function buildCheck({
