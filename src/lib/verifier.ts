@@ -121,6 +121,7 @@ export async function verifyNormalizedReport(
 
   const publicKey = normalizeHex(report.signing_public_key);
   const signingKey = normalizeHex(report.signing_key);
+  const hasDuplicateSigningKey = typeof report.signing_key === "string";
   const reportedAddress = normalizeAddress(report.signing_address);
   const nonce = normalizeHex(report.nonce);
   const requestNonce = normalizeHex(report.request_nonce);
@@ -165,7 +166,9 @@ export async function verifyNormalizedReport(
   checks.push(
     buildCheck({
       description:
-        publicKey && signingKey && publicKey.toLowerCase() === signingKey.toLowerCase()
+        !hasDuplicateSigningKey
+          ? "The optional duplicate signing_key field is absent, so binding checks rely on signing_public_key only."
+          : publicKey && signingKey && publicKey.toLowerCase() === signingKey.toLowerCase()
           ? "The duplicated signing key fields agree."
           : "The signing key fields disagree or one is missing.",
       domain: "binding",
@@ -175,7 +178,9 @@ export async function verifyNormalizedReport(
       severity: "blocking",
       source: "local",
       status:
-        publicKey && signingKey && publicKey.toLowerCase() === signingKey.toLowerCase()
+        !hasDuplicateSigningKey
+          ? "info"
+          : publicKey && signingKey && publicKey.toLowerCase() === signingKey.toLowerCase()
           ? "pass"
           : "fail",
     }),

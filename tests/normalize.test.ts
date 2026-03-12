@@ -52,6 +52,18 @@ describe("parseReportSource", () => {
     ).toBe("fail");
   });
 
+  it("treats a missing optional signing_key field as informational", async () => {
+    const report = buildBaseReport({
+      signing_key: undefined,
+    });
+
+    const result = await parseReportSource(JSON.stringify(report), "missing-signing-key.json");
+
+    expect(
+      result.checks.find((check) => check.id === "signing-key-consistency")?.status,
+    ).toBe("info");
+  });
+
   it("treats unsupported TDX quote versions as blocking failures", async () => {
     const report = buildBaseReport({
       intel_quote: buildQuoteHex({ version: 5 }),
