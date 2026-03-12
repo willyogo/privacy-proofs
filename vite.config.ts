@@ -1,4 +1,10 @@
-import { defineConfig } from "vite";
+import {
+  defineConfig,
+  type Connect,
+  type Plugin,
+  type PreviewServer,
+  type ViteDevServer,
+} from "vite";
 import react from "@vitejs/plugin-react";
 import {
   INTEL_PROXY_ROUTE,
@@ -11,21 +17,8 @@ import {
   proxyNvidiaJwksRequest,
 } from "./src/lib/nvidia-collateral-proxy";
 
-function intelCollateralProxyPlugin() {
-  const handleRequest = async (
-    req: {
-      headers?: Record<string, string | string[] | undefined>;
-      method?: string;
-      url?: string;
-      [Symbol.asyncIterator]?: () => AsyncIterator<Uint8Array | string>;
-    },
-    res: {
-      end: (body?: Uint8Array | string) => void;
-      setHeader: (name: string, value: string) => void;
-      statusCode: number;
-    },
-    next: (error?: unknown) => void,
-  ) => {
+function intelCollateralProxyPlugin(): Plugin {
+  const handleRequest: Connect.NextHandleFunction = async (req, res, next) => {
     const requestUrl = new URL(req.url ?? "/", "http://127.0.0.1");
     if (
       requestUrl.pathname !== INTEL_PROXY_ROUTE &&
@@ -74,38 +67,10 @@ function intelCollateralProxyPlugin() {
   };
 
   return {
-    configurePreviewServer(server: {
-      middlewares: {
-        use: (
-          handler: (
-            req: { method?: string; url?: string },
-            res: {
-              end: (body?: Uint8Array | string) => void;
-              setHeader: (name: string, value: string) => void;
-              statusCode: number;
-            },
-            next: (error?: unknown) => void,
-          ) => void | Promise<void>,
-        ) => void;
-      };
-    }) {
+    configurePreviewServer(server: PreviewServer) {
       server.middlewares.use(handleRequest);
     },
-    configureServer(server: {
-      middlewares: {
-        use: (
-          handler: (
-            req: { method?: string; url?: string },
-            res: {
-              end: (body?: Uint8Array | string) => void;
-              setHeader: (name: string, value: string) => void;
-              statusCode: number;
-            },
-            next: (error?: unknown) => void,
-          ) => void | Promise<void>,
-        ) => void;
-      };
-    }) {
+    configureServer(server: ViteDevServer) {
       server.middlewares.use(handleRequest);
     },
     name: "intel-collateral-proxy",
@@ -113,19 +78,17 @@ function intelCollateralProxyPlugin() {
 }
 
 async function readRequestBody(
-  req: {
-    [Symbol.asyncIterator]?: () => AsyncIterator<Uint8Array | string>;
-  },
+  req: Connect.IncomingMessage,
 ): Promise<ArrayBuffer | undefined> {
-  if (!req[Symbol.asyncIterator]) {
-    return undefined;
-  }
-
   const chunks: Uint8Array[] = [];
-  const iterable = req as AsyncIterable<Uint8Array | string>;
-  for await (const chunk of iterable) {
+
+  for await (const chunk of req) {
     chunks.push(
-      typeof chunk === "string" ? new TextEncoder().encode(chunk) : chunk,
+      typeof chunk === "string"
+        ? new TextEncoder().encode(chunk)
+        : chunk instanceof Uint8Array
+          ? chunk
+          : new Uint8Array(chunk),
     );
   }
 
