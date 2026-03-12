@@ -12,7 +12,7 @@ You can paste raw JSON or upload a report file, and the app will:
 
 ## Purpose
 
-This repo exists to make Venice attestation reports easier to inspect without sending the report to a backend service. The current build performs real local validation for report structure, internal bindings, certificate chains, Intel TDX quote cryptography, and NVIDIA evidence signatures using only the raw report bytes Venice exposes, then can complete the missing vendor-backed steps live in the browser.
+This repo exists to make Venice attestation reports easier to inspect without sending the report to a dedicated backend verifier. The current build performs real local validation for report structure, internal bindings, certificate chains, Intel TDX quote cryptography, and NVIDIA evidence signatures using only the raw report bytes Venice exposes, then can complete the missing vendor-backed steps live through same-origin proxy routes during deployment.
 
 Today, the app is best understood as a transparent verifier UI with an independent local verification engine that refuses to upgrade embedded Venice or NRAS claims into proof on their own. Users can then opt into live vendor verification to reach a fully verified result from the same Venice report.
 
@@ -65,7 +65,7 @@ The app is a Vite + React + TypeScript single-page application.
 
 ## Current Scope and Limits
 
-This repository now performs a materially stronger local verification pass than the original implementation and can reach a `Fully verified` result from a Venice report alone when the browser is allowed to contact Intel PCS and NVIDIA NRAS.
+This repository now performs a materially stronger local verification pass than the original implementation and can reach a `Fully verified` result from a Venice report alone when the deployed app can reach Intel PCS and NVIDIA NRAS through its online completion routes.
 
 The main remaining limits are:
 
@@ -151,14 +151,15 @@ The offline path requires no backend or environment-variable setup.
 
 Optional environment variables for the online path:
 
-- `VITE_INTEL_PCS_BASE_URL` to override the Intel PCS base URL
-- `VITE_NVIDIA_NRAS_BASE_URL` to override the NVIDIA NRAS base URL
-- `VITE_NVIDIA_NRAS_JWKS_URL` to override the NVIDIA JWKS URL
+- `VITE_INTEL_PCS_BASE_URL` to override the default Intel same-origin proxy route
+- `VITE_NVIDIA_NRAS_BASE_URL` to override the default NVIDIA same-origin proxy route
+- `VITE_NVIDIA_NRAS_JWKS_URL` to override the default NVIDIA JWKS proxy route
 - `VITE_NVIDIA_NRAS_API_KEY` to inject an NRAS API key at build/deploy time
 
 ## Deployment Notes
 
-- The app is still a static frontend with no backend verifier.
+- The app is still a static frontend plus thin same-origin proxy routes for Intel PCS and NVIDIA NRAS.
+- Vercel deployments should serve `/api/intel-proxy`, `/api/nvidia/attest/gpu`, and `/api/nvidia/jwks` from the repo's `api/` directory.
 - The production build code-splits the heavy verifier path so the landing bundle stays smaller and the crypto/X.509 stack loads on demand.
 - Static hosts should set a CSP and other security headers at the edge. This repo does not yet ship host-specific config for Vercel, Netlify, or Cloudflare Pages.
 

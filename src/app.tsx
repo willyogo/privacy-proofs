@@ -3,6 +3,7 @@ import AdvancedPanel from "./components/AdvancedPanel";
 import CheckList from "./components/CheckList";
 import InputPanel from "./components/InputPanel";
 import VerdictCard from "./components/VerdictCard";
+import { NVIDIA_JWKS_ROUTE, NVIDIA_PROXY_BASE_ROUTE } from "./lib/nvidia-collateral-proxy";
 import { createIdleParseResult, parseReportSource } from "./lib/normalize";
 import type { ParseResult, VerificationMode } from "./lib/types";
 
@@ -46,10 +47,10 @@ export default function App() {
                 sanitizeEnvValue(runtimeEnv?.VITE_NVIDIA_NRAS_API_KEY),
               nvidiaBaseUrl:
                 sanitizeEnvValue(runtimeEnv?.VITE_NVIDIA_NRAS_BASE_URL) ??
-                "https://nras.attestation.nvidia.com/v4",
+                NVIDIA_PROXY_BASE_ROUTE,
               nvidiaJwksUrl:
                 sanitizeEnvValue(runtimeEnv?.VITE_NVIDIA_NRAS_JWKS_URL) ??
-                "https://nras.attestation.nvidia.com/.well-known/jwks.json",
+                NVIDIA_JWKS_ROUTE,
             }
           : undefined,
     });

@@ -127,8 +127,8 @@ describe("App", () => {
       online: {
         intelBaseUrl: "/api/intel-proxy",
         nvidiaApiKey: "fixture-api-key",
-        nvidiaBaseUrl: "https://nras.attestation.nvidia.com/v4",
-        nvidiaJwksUrl: "https://nras.attestation.nvidia.com/.well-known/jwks.json",
+        nvidiaBaseUrl: "/api/nvidia",
+        nvidiaJwksUrl: "/api/nvidia/jwks",
       },
     });
   });
