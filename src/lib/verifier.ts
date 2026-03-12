@@ -13,6 +13,7 @@ import {
 import {
   evaluateQeIdentity,
   evaluateTcbInfo,
+  extractIntelSignedBodyText,
   isCollateralCurrent,
   parseIntelPckExtensions,
   parseQeReport,
@@ -701,6 +702,10 @@ async function evaluateTdxCollateral({
   const qeIdentitySignatureValid = await verifyIntelCollateralSignature({
     body: qeIdentity.enclaveIdentity,
     chain: signingChainResult.chain ?? [],
+    signedBodyText: extractIntelSignedBodyText(
+      collateral.qeIdentity.rawValue,
+      "enclaveIdentity",
+    ),
     signatureHex: qeIdentity.signature,
   });
   checks.push(
@@ -760,6 +765,10 @@ async function evaluateTdxCollateral({
   const tcbInfoSignatureValid = await verifyIntelCollateralSignature({
     body: signedTcbInfo.tcbInfo,
     chain: signingChainResult.chain ?? [],
+    signedBodyText: extractIntelSignedBodyText(
+      collateral.signedTcbInfo.rawValue,
+      "tcbInfo",
+    ),
     signatureHex: signedTcbInfo.signature,
   });
   checks.push(

@@ -120,10 +120,12 @@ export function parseQeReport(report: Uint8Array): ParsedQeReport | undefined {
 export async function verifyIntelCollateralSignature({
   body,
   chain,
+  signedBodyText,
   signatureHex,
 }: {
   body: IntelSignedQeIdentity["enclaveIdentity"] | IntelSignedTcbInfo["tcbInfo"];
   chain: X509Certificate[];
+  signedBodyText?: string;
   signatureHex: string;
 }): Promise<boolean> {
   const signature = normalizeHex(signatureHex);
@@ -142,11 +144,33 @@ export async function verifyIntelCollateralSignature({
   return verifyEcdsaSignature({
     hash: "SHA-256",
     namedCurve: "P-256",
-    payload: utf8ToBytes(JSON.stringify(body)),
+    payload: utf8ToBytes(signedBodyText ?? JSON.stringify(body)),
     publicKey,
     signature: hexToBytes(signature),
     signatureFormat: "ieee-p1363",
   });
+}
+
+export function extractIntelSignedBodyText(
+  rawValue: unknown,
+  key: "enclaveIdentity" | "tcbInfo",
+): string | undefined {
+  let container = rawValue;
+
+  if (typeof container === "string") {
+    try {
+      container = JSON.parse(container);
+    } catch {
+      return undefined;
+    }
+  }
+
+  if (!isRecord(container)) {
+    return undefined;
+  }
+
+  const body = container[key];
+  return body === undefined ? undefined : JSON.stringify(body);
 }
 
 export function evaluateQeIdentity({
@@ -342,4 +366,8 @@ function normalizeHex(value: string | undefined): string | undefined {
   }
 
   return /^[0-9a-fA-F]+$/.test(trimmed) ? trimmed.toLowerCase() : undefined;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }

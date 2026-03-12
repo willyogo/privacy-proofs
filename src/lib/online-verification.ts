@@ -9,6 +9,7 @@ import { utf8ToBytes, verifyEcdsaSignature } from "./crypto";
 import {
   evaluateQeIdentity,
   evaluateTcbInfo,
+  extractIntelSignedBodyText,
   isCollateralCurrent,
   type ParsedIntelPckExtensions,
   type ParsedQeReport,
@@ -108,6 +109,7 @@ export async function completeIntelOnlineVerification({
     jsonPath: "$.intel_quote",
     label: "Fetch Intel QE identity",
     parser: asIntelSignedQeIdentity,
+    signedBodyKey: "enclaveIdentity",
     url: buildIntelFetchUrl(
       baseUrl,
       `${DEFAULT_INTEL_PCS_ORIGIN}/tdx/certification/v4/qe/identity`,
@@ -122,6 +124,7 @@ export async function completeIntelOnlineVerification({
     jsonPath: "$.intel_quote",
     label: "Fetch Intel TCB info",
     parser: asIntelSignedTcbInfo,
+    signedBodyKey: "tcbInfo",
     url: buildIntelFetchUrl(
       baseUrl,
       `${DEFAULT_INTEL_PCS_ORIGIN}/tdx/certification/v4/tcb?fmspc=${encodeURIComponent(
@@ -191,6 +194,7 @@ export async function completeIntelOnlineVerification({
   const qeIdentitySignatureValid = await verifyIntelCollateralSignature({
     body: qeIdentityResponse.value.enclaveIdentity,
     chain: qeIdentityChainResult.chain ?? [],
+    signedBodyText: qeIdentityResponse.signedBodyText,
     signatureHex: qeIdentityResponse.value.signature,
   });
   checks.push(
@@ -211,6 +215,7 @@ export async function completeIntelOnlineVerification({
   const tcbInfoSignatureValid = await verifyIntelCollateralSignature({
     body: tcbInfoResponse.value.tcbInfo,
     chain: tcbInfoChainResult.chain ?? [],
+    signedBodyText: tcbInfoResponse.signedBodyText,
     signatureHex: tcbInfoResponse.value.signature,
   });
   checks.push(
@@ -741,6 +746,7 @@ async function fetchIntelJson<T>({
   jsonPath,
   label,
   parser,
+  signedBodyKey,
   url,
 }: {
   fetchImpl: typeof fetch;
@@ -749,10 +755,17 @@ async function fetchIntelJson<T>({
   jsonPath: string;
   label: string;
   parser: (value: unknown) => T | undefined;
+  signedBodyKey: "enclaveIdentity" | "tcbInfo";
   url: string;
 }): Promise<
   | { checks: CheckResult[]; ok: false }
-  | { checks: CheckResult[]; issuerChain: string; ok: true; value: T }
+  | {
+      checks: CheckResult[];
+      issuerChain: string;
+      ok: true;
+      signedBodyText: string;
+      value: T;
+    }
 > {
   const response = await fetchJson({
     fetchImpl,
@@ -765,6 +778,7 @@ async function fetchIntelJson<T>({
     return response;
   }
 
+  const signedBodyText = extractIntelSignedBodyText(response.value, signedBodyKey);
   const parsed = parser(response.value);
   const issuerChain = decodeIssuerChainHeader(response.headers.get(headerName));
   const checks = [...response.checks];
@@ -786,6 +800,21 @@ async function fetchIntelJson<T>({
 
   checks.push(
     buildCheck({
+      description: signedBodyText
+        ? `${label} preserved the original Intel signed-body bytes.`
+        : `${label} did not preserve the original Intel signed-body bytes.`,
+      domain: "tdx",
+      id: `${id}-signed-body`,
+      jsonPath,
+      label: `Capture ${label.toLowerCase()} signed body`,
+      severity: "advisory",
+      source: "online",
+      status: signedBodyText ? "pass" : "fail",
+    }),
+  );
+
+  checks.push(
+    buildCheck({
       description: issuerChain
         ? `${label} included its issuer chain header.`
         : `${label} did not include its issuer chain header.`,
@@ -799,7 +828,7 @@ async function fetchIntelJson<T>({
     }),
   );
 
-  if (!parsed || !issuerChain) {
+  if (!parsed || !issuerChain || !signedBodyText) {
     return { checks, ok: false };
   }
 
@@ -807,6 +836,7 @@ async function fetchIntelJson<T>({
     checks,
     issuerChain,
     ok: true,
+    signedBodyText,
     value: parsed,
   };
 }

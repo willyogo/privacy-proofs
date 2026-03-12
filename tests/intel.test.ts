@@ -3,6 +3,7 @@ import { validateCertificateChain } from "../src/lib/certificates";
 import {
   evaluateQeIdentity,
   evaluateTcbInfo,
+  extractIntelSignedBodyText,
   isCollateralCurrent,
   parseIntelPckExtensions,
   parseQeReport,
@@ -119,6 +120,53 @@ describe("Intel collateral verification", () => {
     });
 
     expect(signatureValid).toBe(false);
+  });
+
+  it("uses the original signed Intel body bytes when object keys are reordered", async () => {
+    const tcbSigningChain = await validateCertificateChain({
+      bundle: INTEL_TDX_TCB_SIGN_CHAIN,
+      bundleLabel: "Intel TCB signing chain",
+      domain: "intel",
+      jsonPath: "$.intel.tcbSignChain",
+    });
+
+    const reorderedQeIdentity = {
+      attributes: INTEL_TDX_QE_IDENTITY.enclaveIdentity.attributes,
+      attributesMask: INTEL_TDX_QE_IDENTITY.enclaveIdentity.attributesMask,
+      id: INTEL_TDX_QE_IDENTITY.enclaveIdentity.id,
+      isvprodid: INTEL_TDX_QE_IDENTITY.enclaveIdentity.isvprodid,
+      issueDate: INTEL_TDX_QE_IDENTITY.enclaveIdentity.issueDate,
+      miscselect: INTEL_TDX_QE_IDENTITY.enclaveIdentity.miscselect,
+      miscselectMask: INTEL_TDX_QE_IDENTITY.enclaveIdentity.miscselectMask,
+      mrsigner: INTEL_TDX_QE_IDENTITY.enclaveIdentity.mrsigner,
+      nextUpdate: INTEL_TDX_QE_IDENTITY.enclaveIdentity.nextUpdate,
+      tcbEvaluationDataNumber:
+        INTEL_TDX_QE_IDENTITY.enclaveIdentity.tcbEvaluationDataNumber,
+      tcbLevels: INTEL_TDX_QE_IDENTITY.enclaveIdentity.tcbLevels,
+      version: INTEL_TDX_QE_IDENTITY.enclaveIdentity.version,
+    };
+
+    const signatureFailsWithReorderedBody = await verifyIntelCollateralSignature({
+      body: reorderedQeIdentity,
+      chain: tcbSigningChain.chain!,
+      signatureHex: INTEL_TDX_QE_IDENTITY.signature,
+    });
+    expect(signatureFailsWithReorderedBody).toBe(false);
+
+    const originalSignedBodyText = extractIntelSignedBodyText(
+      JSON.stringify(INTEL_TDX_QE_IDENTITY),
+      "enclaveIdentity",
+    );
+    expect(originalSignedBodyText).toBeDefined();
+
+    const signatureValidWithOriginalBody = await verifyIntelCollateralSignature({
+      body: reorderedQeIdentity,
+      chain: tcbSigningChain.chain!,
+      signedBodyText: originalSignedBodyText,
+      signatureHex: INTEL_TDX_QE_IDENTITY.signature,
+    });
+
+    expect(signatureValidWithOriginalBody).toBe(true);
   });
 
   it("fails TCB evaluation when the collateral FMSPC is wrong", async () => {
