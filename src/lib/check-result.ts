@@ -13,8 +13,15 @@ export type EvidenceDomain =
   | "event-log"
   | "provenance";
 
+export type CheckDetail = {
+  copyValue?: string;
+  label: string;
+  value: string;
+};
+
 export type CheckResult = {
   description: string;
+  details?: CheckDetail[];
   domain: EvidenceDomain;
   id: string;
   jsonPath: string;

@@ -21,6 +21,7 @@ export default function VerdictCard({
   const tone = toneByStatus[result.verification.status];
   const summary = result.summary;
   const shouldShowSummary = summary !== undefined;
+  const formattedVerifiedAt = formatVerifiedAt(summary?.verifiedAt);
 
   return (
     <section
@@ -68,10 +69,33 @@ export default function VerdictCard({
           </div>
           <div>
             <dt>Embedded Venice/NRAS verified at</dt>
-            <dd>{summary.verifiedAt ?? "Not embedded"}</dd>
+            <dd>{formattedVerifiedAt}</dd>
           </div>
         </dl>
       ) : null}
     </section>
   );
+}
+
+function formatVerifiedAt(value?: string): string {
+  if (!value) {
+    return "Not embedded";
+  }
+
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    return value;
+  }
+
+  return new Intl.DateTimeFormat("en-US", {
+    day: "numeric",
+    hour: "numeric",
+    hour12: true,
+    minute: "2-digit",
+    month: "short",
+    second: "2-digit",
+    timeZone: "UTC",
+    timeZoneName: "short",
+    year: "numeric",
+  }).format(parsed);
 }

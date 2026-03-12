@@ -12,10 +12,7 @@ export default function AdvancedPanel({
   return (
     <section className={className ? `panel ${className}` : "panel"}>
       <div className="panel-header">
-        <div>
-          <p className="panel-kicker">Advanced</p>
-          <h2>Decoded Overview</h2>
-        </div>
+        <h2>Decoded Overview</h2>
       </div>
 
       {result.summary ? (

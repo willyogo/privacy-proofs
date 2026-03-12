@@ -1,5 +1,5 @@
 import { bytesToHex, getAddress, hexToBytes, keccak256 } from "viem";
-import type { CheckResult } from "./check-result";
+import type { CheckDetail, CheckResult } from "./check-result";
 import { parseDerAt } from "./asn1";
 import { validateCertificateChain } from "./certificates";
 import {
@@ -135,6 +135,10 @@ export async function verifyNormalizedReport(
           reportedAddress && derivedSigningAddress === reportedAddress
             ? "The signing public key derives to the reported Ethereum address."
             : "The signing public key does not derive to the reported signing address.",
+        details: [
+          buildDetail("Reported signing address", reportedAddress),
+          buildDetail("Derived address from public key", derivedSigningAddress),
+        ],
         domain: "binding",
         id: "signing-address-binding",
         jsonPath: "$.signing_public_key",
@@ -152,6 +156,10 @@ export async function verifyNormalizedReport(
       buildCheck({
         description:
           "The signing public key is missing or not a 65-byte uncompressed secp256k1 public key.",
+        details: [
+          buildDetail("Reported signing address", reportedAddress),
+          buildDetail("Derived address from public key", derivedSigningAddress),
+        ],
         domain: "binding",
         id: "signing-address-binding",
         jsonPath: "$.signing_public_key",
@@ -171,6 +179,10 @@ export async function verifyNormalizedReport(
           : publicKey && signingKey && publicKey.toLowerCase() === signingKey.toLowerCase()
           ? "The duplicated signing key fields agree."
           : "The signing key fields disagree or one is missing.",
+      details: [
+        buildDetail("signing_public_key", publicKey),
+        buildDetail("signing_key", signingKey),
+      ],
       domain: "binding",
       id: "signing-key-consistency",
       jsonPath: "$.signing_key",
@@ -192,6 +204,10 @@ export async function verifyNormalizedReport(
         nonce && requestNonce && nonce === requestNonce
           ? "The top-level nonce matches the request nonce."
           : "The top-level nonce does not match the request nonce.",
+      details: [
+        buildDetail("Attestation nonce", nonce),
+        buildDetail("Request nonce", requestNonce),
+      ],
       domain: "binding",
       id: "request-nonce-consistency",
       jsonPath: "$.nonce",
@@ -210,6 +226,10 @@ export async function verifyNormalizedReport(
         nonce && nvidiaNonce && nonce === nvidiaNonce
           ? "The NVIDIA payload nonce matches the attestation nonce."
           : "The NVIDIA payload nonce does not match the attestation nonce.",
+      details: [
+        buildDetail("Attestation nonce", nonce),
+        buildDetail("NVIDIA payload nonce", nvidiaNonce),
+      ],
       domain: "binding",
       id: "nvidia-nonce-binding",
       jsonPath: "$.nvidia_payload.nonce",
@@ -767,6 +787,10 @@ async function verifyTdxQuoteCryptography({
       description: qeReportDataMatches
         ? "The QE report data commits to the attestation public key and QE auth data."
         : "The QE report data does not match the attestation public key plus QE auth data hash.",
+      details: [
+        buildDetail("Expected QE report data hash", expectedQeReportData),
+        buildDetail("Actual QE report data", actualQeReportData),
+      ],
       domain: "tdx",
       id: "tdx-qe-report-data",
       jsonPath: "$.intel_quote",
@@ -917,6 +941,10 @@ async function verifyNvidiaEvidence({
         description: nonceMatches
           ? "The NVIDIA evidence request nonce matches the attestation report nonce."
           : "The NVIDIA evidence request nonce does not match the attestation report nonce.",
+        details: [
+          buildDetail("Expected attestation nonce", expectedNonce),
+          buildDetail("Evidence request nonce", parsedEvidence.requestNonce),
+        ],
         domain: "nvidia",
         id: `nvidia-evidence-request-nonce-${index}`,
         jsonPath: `$.nvidia_payload.evidence_list[${index}].evidence`,
@@ -936,6 +964,10 @@ async function verifyNvidiaEvidence({
         description: archMatches
           ? "The NVIDIA evidence architecture matches the reported NVIDIA payload architecture."
           : "The NVIDIA evidence architecture does not match the reported NVIDIA payload architecture.",
+        details: [
+          buildDetail("Reported payload architecture", expectedArch),
+          buildDetail("Evidence architecture", actualArch),
+        ],
         domain: "nvidia",
         id: `nvidia-evidence-arch-${index}`,
         jsonPath: `$.nvidia_payload.evidence_list[${index}].arch`,
@@ -956,6 +988,10 @@ async function verifyNvidiaEvidence({
         description: fwidMatches
           ? "The NVIDIA FWID extracted from opaque evidence matches the device certificate FWID."
           : "The NVIDIA FWID extracted from opaque evidence does not match the device certificate FWID.",
+        details: [
+          buildDetail("FWID from evidence", parsedEvidence.evidenceFwid),
+          buildDetail("FWID from certificate", parsedEvidence.leafCertificateFwid),
+        ],
         domain: "nvidia",
         id: `nvidia-evidence-fwid-${index}`,
         jsonPath: `$.nvidia_payload.evidence_list[${index}].evidence`,
@@ -977,6 +1013,10 @@ async function verifyNvidiaEvidence({
             : opaqueVersionSupported
               ? `The NVIDIA evidence opaque-data version ${parsedEvidence.opaqueDataVersion} is supported.`
               : `The NVIDIA evidence opaque-data version ${parsedEvidence.opaqueDataVersion} is not supported.`,
+        details: [
+          buildDetail("Opaque-data version", parsedEvidence.opaqueDataVersion),
+          buildDetail("Maximum supported version", 1),
+        ],
         domain: "nvidia",
         id: `nvidia-evidence-opaque-version-${index}`,
         jsonPath: `$.nvidia_payload.evidence_list[${index}].evidence`,
@@ -1051,6 +1091,10 @@ function evaluateEmbeddedClaims(
         report.verified === true
           ? "The report includes an embedded verified flag reported by an upstream Venice or NRAS verifier."
           : "The report does not include an embedded verified flag.",
+      details: [
+        buildDetail("Embedded verified flag", report.verified),
+        buildDetail("Embedded verifiedAt", verifiedAt),
+      ],
       domain: "provenance",
       id: "embedded-report-verified-flag",
       jsonPath: "$.verified",
@@ -1067,6 +1111,13 @@ function evaluateEmbeddedClaims(
         tdx?.valid === true
           ? "The embedded verifier reports a valid TDX quote."
           : "The embedded verifier does not report a valid TDX quote.",
+      details: [
+        buildDetail(
+          "Embedded server_verification.tdx.valid",
+          isRecord(tdx) ? tdx.valid : undefined,
+        ),
+        buildDetail("Embedded verifiedAt", verifiedAt),
+      ],
       domain: "provenance",
       id: "embedded-tdx-claims",
       jsonPath: "$.server_verification.tdx",
@@ -1083,6 +1134,13 @@ function evaluateEmbeddedClaims(
         nvidia?.valid === true
           ? "The embedded verifier reports valid NVIDIA evidence."
           : "The embedded verifier does not report valid NVIDIA evidence.",
+      details: [
+        buildDetail(
+          "Embedded server_verification.nvidia.valid",
+          isRecord(nvidia) ? nvidia.valid : undefined,
+        ),
+        buildDetail("Embedded verifiedAt", verifiedAt),
+      ],
       domain: "provenance",
       id: "embedded-nvidia-claims",
       jsonPath: "$.server_verification.nvidia",
@@ -1105,6 +1163,11 @@ function evaluateEmbeddedClaims(
         embeddedAddress !== undefined && embeddedAddress === derivedSigningAddress
           ? "The embedded verifier reports the same signing address binding derived locally."
           : "The embedded verifier does not provide a matching signing address binding.",
+      details: [
+        buildDetail("Embedded report-data address", embeddedAddress),
+        buildDetail("Locally derived signing address", derivedSigningAddress),
+        buildDetail("Embedded verifiedAt", verifiedAt),
+      ],
       domain: "provenance",
       id: "embedded-binding-claims",
       jsonPath: "$.server_verification",
@@ -1520,6 +1583,7 @@ function hasBlockingFailures(checks: CheckResult[]): boolean {
 
 function buildCheck({
   description,
+  details,
   domain,
   id,
   jsonPath,
@@ -1530,6 +1594,7 @@ function buildCheck({
 }: CheckResult): CheckResult {
   return {
     description,
+    details,
     domain,
     id,
     jsonPath,
@@ -1537,5 +1602,36 @@ function buildCheck({
     severity,
     source,
     status,
+  };
+}
+
+function buildDetail(
+  label: string,
+  value: unknown,
+): CheckDetail {
+  if (
+    value !== undefined &&
+    typeof value !== "boolean" &&
+    typeof value !== "number" &&
+    typeof value !== "string"
+  ) {
+    return {
+      label,
+      value: "Unavailable",
+    };
+  }
+
+  if (value === undefined) {
+    return {
+      label,
+      value: "Unavailable",
+    };
+  }
+
+  const text = String(value);
+  return {
+    copyValue: text,
+    label,
+    value: text,
   };
 }

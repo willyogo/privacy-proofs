@@ -63,6 +63,10 @@ describe("App", () => {
     const { default: App } = await import("../src/app");
     render(<App />);
 
+    expect(screen.queryByText(/^Input$/)).toBeNull();
+    expect(screen.queryByText(/^Diagnostics$/)).toBeNull();
+    expect(screen.queryByText(/^Advanced$/)).toBeNull();
+
     const headings = screen.getAllByRole("heading", { level: 2 }).map((heading) => {
       return heading.textContent;
     });

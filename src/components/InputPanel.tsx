@@ -20,10 +20,7 @@ export default function InputPanel({
   return (
     <section className={className ? `panel ${className}` : "panel"}>
       <div className="panel-header">
-        <div>
-          <p className="panel-kicker">Input</p>
-          <h2>Load a report and verify</h2>
-        </div>
+        <h2>Load a report and verify</h2>
         <span className="panel-chip">Frontend only</span>
       </div>
 
