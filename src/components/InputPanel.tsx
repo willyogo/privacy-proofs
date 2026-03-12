@@ -60,7 +60,14 @@ export default function InputPanel({
         className="textarea-label"
         htmlFor="nvidia-api-key"
       >
-        Optional NVIDIA NRAS API key
+        <a
+          href="https://build.nvidia.com/"
+          rel="noreferrer noopener"
+          target="_blank"
+        >
+          NVIDIA API key
+        </a>{" "}
+        (optional for local verification, required for live vendor verification)
       </label>
       <input
         autoComplete="off"
