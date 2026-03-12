@@ -26,7 +26,7 @@ describe("VerdictCard", () => {
     expect(screen.getByText("not-a-date")).toBeTruthy();
   });
 
-  it("shows Not embedded when the report has no embedded verification timestamp", () => {
+  it("shows Unavailable when the report has no verification timestamp", () => {
     render(
       <VerdictCard
         fileName="fixture.json"
@@ -34,7 +34,7 @@ describe("VerdictCard", () => {
       />,
     );
 
-    expect(screen.getByText("Not embedded")).toBeTruthy();
+    expect(screen.getByText("Unavailable")).toBeTruthy();
   });
 });
 

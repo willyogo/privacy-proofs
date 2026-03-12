@@ -54,9 +54,13 @@ describe("App", () => {
 
     expect(parseReportSource).not.toHaveBeenCalled();
 
-    fireEvent.click(screen.getByRole("button", { name: "Verify report" }));
+    fireEvent.click(screen.getByRole("button", { name: "Verify locally" }));
 
     await waitFor(() => expect(parseReportSource).toHaveBeenCalledTimes(1));
+    expect(parseReportSource).toHaveBeenCalledWith('{"report":true}', undefined, {
+      mode: "offline",
+      online: undefined,
+    });
   });
 
   it("renders the polished section headings in the expected order", async () => {
@@ -96,9 +100,36 @@ describe("App", () => {
     fireEvent.change(reportTextarea, {
       target: { value: '{"report":true}' },
     });
-    fireEvent.click(screen.getByRole("button", { name: "Verify report" }));
+    fireEvent.click(screen.getByRole("button", { name: "Verify locally" }));
 
     await waitFor(() => expect(screen.getByText("Source")).toBeTruthy());
     expect(screen.getByText("fixture-model")).toBeTruthy();
+  });
+
+  it("passes online options when full verification is requested", async () => {
+    const { default: App } = await import("../src/app");
+    render(<App />);
+
+    fireEvent.change(screen.getByLabelText("Raw attestation JSON"), {
+      target: { value: '{"report":true}' },
+    });
+    fireEvent.change(screen.getByLabelText("Optional NVIDIA NRAS API key"), {
+      target: { value: "fixture-api-key" },
+    });
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Complete full verification" }),
+    );
+
+    await waitFor(() => expect(parseReportSource).toHaveBeenCalledTimes(1));
+    expect(parseReportSource).toHaveBeenCalledWith('{"report":true}', undefined, {
+      mode: "online",
+      online: {
+        intelBaseUrl: undefined,
+        nvidiaApiKey: "fixture-api-key",
+        nvidiaBaseUrl: "https://nras.attestation.nvidia.com/v4",
+        nvidiaJwksUrl: "https://nras.attestation.nvidia.com/.well-known/jwks.json",
+      },
+    });
   });
 });

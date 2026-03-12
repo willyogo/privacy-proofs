@@ -2,7 +2,7 @@ import {
   X509Certificate,
   X509ChainBuilder,
 } from "@peculiar/x509";
-import type { CheckResult, CheckSeverity } from "./check-result";
+import type { CheckResult, CheckSeverity, CheckSource } from "./check-result";
 import { sha256Hex } from "./crypto";
 import {
   getPinnedRootFingerprints,
@@ -16,6 +16,7 @@ type CertificateValidationOptions = {
   domain: TrustDomain;
   jsonPath: string;
   severity?: CheckSeverity;
+  source?: CheckSource;
 };
 
 type CertificateValidationResult = {
@@ -29,6 +30,7 @@ export async function validateCertificateChain({
   domain,
   jsonPath,
   severity = "blocking",
+  source = "local",
 }: CertificateValidationOptions): Promise<CertificateValidationResult> {
   const checks: CheckResult[] = [];
   const pems = splitPemBundle(bundle);
@@ -43,7 +45,7 @@ export async function validateCertificateChain({
           jsonPath,
           label: `Parse ${bundleLabel}`,
           severity,
-          source: "local",
+          source,
           status: "fail",
         }),
       ],
@@ -66,7 +68,7 @@ export async function validateCertificateChain({
           jsonPath,
           label: `Parse ${bundleLabel}`,
           severity,
-          source: "local",
+          source,
           status: "fail",
         }),
       ],
@@ -81,7 +83,7 @@ export async function validateCertificateChain({
       jsonPath,
       label: `Parse ${bundleLabel}`,
       severity,
-      source: "local",
+      source,
       status: "pass",
     }),
   );
@@ -104,7 +106,7 @@ export async function validateCertificateChain({
           jsonPath,
           label: `Validate ${bundleLabel} chain`,
           severity,
-          source: "local",
+          source,
           status: "fail",
         }),
       ],
@@ -119,7 +121,7 @@ export async function validateCertificateChain({
       jsonPath,
       label: `Validate ${bundleLabel} chain`,
       severity,
-      source: "local",
+      source,
       status: "pass",
     }),
   );
@@ -139,7 +141,7 @@ export async function validateCertificateChain({
       jsonPath,
       label: `Check ${bundleLabel} validity window`,
       severity,
-      source: "local",
+      source,
       status: expiredCertificate ? "fail" : "pass",
     }),
   );
@@ -162,7 +164,7 @@ export async function validateCertificateChain({
       jsonPath,
       label: `Check ${bundleLabel} root pin`,
       severity,
-      source: "local",
+      source,
       status: anchoredToPinnedRoot ? "pass" : "fail",
     }),
   );

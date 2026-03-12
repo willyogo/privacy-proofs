@@ -8,6 +8,8 @@ import {
 } from "./fixtures/intelVendor";
 
 const mocks = vi.hoisted(() => ({
+  completeIntelOnlineVerification: vi.fn(),
+  completeNvidiaOnlineVerification: vi.fn(),
   evaluateQeIdentity: vi.fn(),
   evaluateTcbInfo: vi.fn(),
   isCollateralCurrent: vi.fn(),
@@ -61,6 +63,11 @@ vi.mock("../src/lib/nvidia", async () => {
   };
 });
 
+vi.mock("../src/lib/online-verification", () => ({
+  completeIntelOnlineVerification: mocks.completeIntelOnlineVerification,
+  completeNvidiaOnlineVerification: mocks.completeNvidiaOnlineVerification,
+}));
+
 const BASE_SIGNING_PUBLIC_KEY =
   "049eb9f800a6d38ac3c30526d812ba9aa49fc0e5f14d7f67ae17e56aa4d9a43f1c274540b74dab8405b5fef5dfbe3431bf5ad7efcf7279008b460c4930bb8f6606";
 const BASE_SIGNING_ADDRESS = "0x4B19f7f8Fd7757AAb29a8990bb11f6aA3572C9B1";
@@ -95,6 +102,8 @@ describe("verdict construction", () => {
     mocks.evaluateQeIdentity.mockReset();
     mocks.evaluateTcbInfo.mockReset();
     mocks.isCollateralCurrent.mockReset();
+    mocks.completeIntelOnlineVerification.mockReset();
+    mocks.completeNvidiaOnlineVerification.mockReset();
     mocks.parseNvidiaEvidence.mockReset();
     mocks.verifyNvidiaEvidenceSignature.mockReset();
 
@@ -137,6 +146,14 @@ describe("verdict construction", () => {
       signedBytes: new Uint8Array([1, 2, 3]),
     });
     mocks.verifyNvidiaEvidenceSignature.mockResolvedValue(true);
+    mocks.completeIntelOnlineVerification.mockResolvedValue({
+      checks: [],
+      status: "verified",
+    });
+    mocks.completeNvidiaOnlineVerification.mockResolvedValue({
+      checks: [],
+      status: "verified",
+    });
     mocks.validateCertificateChain.mockImplementation(async ({ bundleLabel, domain, jsonPath, severity = "blocking" }) => {
       const status =
         bundleLabel === "App certificate bundle" ? testConfig.appCertStatus : "pass";
@@ -253,6 +270,61 @@ describe("verdict construction", () => {
 
     expect(result.verification.status).toBe("verified");
     expect(result.verification.evidenceStatus.intel).toBe("verified");
+    expect(result.verification.badge).toBe("Locally verified");
+  });
+
+  it("reaches fully verified when online Intel and NVIDIA completion both succeed", async () => {
+    const result = await parseReportSource(JSON.stringify(buildReport()), "fixture.json", {
+      mode: "online",
+      online: {
+        nvidiaApiKey: "fixture-api-key",
+      },
+    });
+
+    expect(mocks.completeIntelOnlineVerification).toHaveBeenCalledTimes(1);
+    expect(mocks.completeNvidiaOnlineVerification).toHaveBeenCalledTimes(1);
+    expect(result.verification.status).toBe("verified");
+    expect(result.verification.badge).toBe("Fully verified");
+    expect(result.verification.mode).toBe("online");
+    expect(result.verification.evidenceStatus).toEqual({
+      intel: "verified",
+      nvidia: "verified",
+    });
+  });
+
+  it("stays partial when NVIDIA online completion cannot finish", async () => {
+    mocks.completeNvidiaOnlineVerification.mockResolvedValue({
+      checks: [
+        {
+          description: "NRAS authentication was unavailable.",
+          domain: "nvidia",
+          id: "nvidia-online-auth",
+          jsonPath: "$.nvidia_payload",
+          label: "Authorize NVIDIA NRAS request",
+          severity: "advisory",
+          source: "online",
+          status: "fail",
+        },
+      ],
+      status: "partial",
+    });
+
+    const result = await parseReportSource(JSON.stringify(buildReport()), "fixture.json", {
+      mode: "online",
+      online: {
+        nvidiaApiKey: "fixture-api-key",
+      },
+    });
+
+    expect(result.verification.status).toBe("partially-verified");
+    expect(result.verification.headline).toBe("Online verification incomplete");
+    expect(result.verification.evidenceStatus).toEqual({
+      intel: "verified",
+      nvidia: "partial",
+    });
+    expect(
+      result.checks.find((check) => check.id === "nvidia-online-auth")?.source,
+    ).toBe("online");
   });
 });
 

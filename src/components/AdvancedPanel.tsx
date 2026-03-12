@@ -59,7 +59,7 @@ export default function AdvancedPanel({
               <dd>{result.summary.quoteReportData ?? "Unavailable"}</dd>
             </div>
             <div>
-              <dt>Embedded Venice/NRAS verified at</dt>
+              <dt>Verification timestamp</dt>
               <dd>{result.summary.verifiedAt ?? "Unavailable"}</dd>
             </div>
           </dl>

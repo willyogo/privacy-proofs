@@ -1,27 +1,36 @@
+import type { VerificationMode } from "../lib/types";
 import JsonDropzone from "./JsonDropzone";
 
 type InputPanelProps = {
+  activeMode: VerificationMode | null;
   className?: string;
   fileName?: string;
-  isVerifying: boolean;
+  nvidiaApiKey: string;
   onInputChange: (nextValue: string, fileName?: string) => void;
-  onVerify: () => void;
+  onNvidiaApiKeyChange: (nextValue: string) => void;
+  onVerifyOffline: () => void;
+  onVerifyOnline: () => void;
   rawInput: string;
 };
 
 export default function InputPanel({
+  activeMode,
   className,
   fileName,
-  isVerifying,
+  nvidiaApiKey,
   onInputChange,
-  onVerify,
+  onNvidiaApiKeyChange,
+  onVerifyOffline,
+  onVerifyOnline,
   rawInput,
 }: InputPanelProps) {
+  const isVerifying = activeMode !== null;
+
   return (
     <section className={className ? `panel ${className}` : "panel"}>
       <div className="panel-header">
         <h2>Load a report and verify</h2>
-        <span className="panel-chip">Frontend only</span>
+        <span className="panel-chip">Offline first</span>
       </div>
 
       <JsonDropzone
@@ -47,26 +56,53 @@ export default function InputPanel({
         value={rawInput}
       />
 
+      <label
+        className="textarea-label"
+        htmlFor="nvidia-api-key"
+      >
+        Optional NVIDIA NRAS API key
+      </label>
+      <input
+        autoComplete="off"
+        className="text-input"
+        id="nvidia-api-key"
+        onChange={(event) => onNvidiaApiKeyChange(event.target.value)}
+        placeholder="Used only for live NVIDIA verification when your deployment does not inject auth"
+        spellCheck={false}
+        type="password"
+        value={nvidiaApiKey}
+      />
+
       <div className="input-actions">
-        <button
-          className="verify-button"
-          disabled={isVerifying || rawInput.trim().length === 0}
-          onClick={onVerify}
-          type="button"
-        >
-          {isVerifying ? "Verifying…" : "Verify report"}
-        </button>
+        <div className="input-actions-group">
+          <button
+            className="verify-button"
+            disabled={isVerifying || rawInput.trim().length === 0}
+            onClick={onVerifyOffline}
+            type="button"
+          >
+            {activeMode === "offline" ? "Verifying…" : "Verify locally"}
+          </button>
+          <button
+            className="verify-button verify-button-secondary"
+            disabled={isVerifying || rawInput.trim().length === 0}
+            onClick={onVerifyOnline}
+            type="button"
+          >
+            {activeMode === "online" ? "Completing…" : "Complete full verification"}
+          </button>
+        </div>
         <div className="input-files">
           <span>{fileName ? `Report: ${fileName}` : "Report: pasted text"}</span>
         </div>
       </div>
 
       <p className="panel-note">
-        The current engine performs typed normalization, local bindings,
-        certificate-chain validation, NVIDIA evidence verification, Intel quote
-        cryptography with optional collateral evaluation when present, and
-        advisory inspection of embedded Venice or NRAS provenance already
-        present in the raw report.
+        Local verification runs typed normalization, local bindings, Intel quote
+        cryptography, NVIDIA evidence verification, and advisory inspection of
+        embedded provenance. Full verification adds live Intel PCS collateral
+        checks plus NVIDIA NRAS confirmation, using only the Venice report as
+        input.
       </p>
     </section>
   );

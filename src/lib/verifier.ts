@@ -1,3 +1,4 @@
+import type { X509Certificate } from "@peculiar/x509";
 import { bytesToHex, getAddress, hexToBytes, keccak256 } from "viem";
 import type { CheckDetail, CheckResult } from "./check-result";
 import { parseDerAt } from "./asn1";
@@ -23,6 +24,10 @@ import {
   verifyNvidiaEvidenceSignature,
 } from "./nvidia";
 import {
+  completeIntelOnlineVerification,
+  completeNvidiaOnlineVerification,
+} from "./online-verification";
+import {
   asInfoBlock,
   asIntelSignedQeIdentity,
   asIntelSignedTcbInfo,
@@ -36,6 +41,7 @@ import type {
   IntelSignedQeIdentity,
   IntelSignedTcbInfo,
   NormalizedAttestationReport,
+  ParseReportOptions,
   VerificationMode,
 } from "./types";
 
@@ -60,6 +66,7 @@ type DomainVerificationResult = {
 type TdxCryptographyResult = {
   baseCryptoPassed: boolean;
   checks: CheckResult[];
+  pckChain?: X509Certificate[];
   pckExtensions?: ReturnType<typeof parseIntelPckExtensions>;
   qeReport?: ReturnType<typeof parseQeReport>;
 };
@@ -126,11 +133,13 @@ type DecodedQuote = {
 
 export async function verifyNormalizedReport(
   report: NormalizedAttestationReport,
+  options: ParseReportOptions = {},
 ): Promise<VerificationAnalysis> {
   const checks: CheckResult[] = [];
   let derivedSigningAddress: string | undefined;
   let quoteReportData: string | undefined;
   let verifiedAt: string | undefined;
+  const mode = options.mode ?? "offline";
 
   const evidenceStatus: VerificationAnalysis["evidenceStatus"] = {
     intel: "unsupported",
@@ -365,12 +374,26 @@ export async function verifyNormalizedReport(
     });
     checks.push(...tdxCryptoResult.checks);
     if (tdxCryptoResult.baseCryptoPassed) {
-      const collateralResult = await evaluateTdxCollateral({
-        pckExtensions: tdxCryptoResult.pckExtensions,
-        qeReport: tdxCryptoResult.qeReport,
-        quote,
-        report,
-      });
+      const collateralResult =
+        mode === "online" &&
+        tdxCryptoResult.pckChain &&
+        tdxCryptoResult.pckExtensions &&
+        tdxCryptoResult.qeReport
+          ? await completeIntelOnlineVerification({
+              options: options.online,
+              pckChain: tdxCryptoResult.pckChain,
+              pckExtensions: tdxCryptoResult.pckExtensions,
+              qeReport: tdxCryptoResult.qeReport,
+              quoteMrSignerSeam: quote.mrSignerSeam,
+              quoteSeamAttributes: quote.seamAttributes,
+              quoteTeeTcbSvn: quote.teeTcbSvn,
+            })
+          : await evaluateTdxCollateral({
+              pckExtensions: tdxCryptoResult.pckExtensions,
+              qeReport: tdxCryptoResult.qeReport,
+              quote,
+              report,
+            });
       checks.push(...collateralResult.checks);
       evidenceStatus.intel = collateralResult.status;
     }
@@ -396,21 +419,33 @@ export async function verifyNormalizedReport(
     expectedNonce: nvidiaNonce,
   });
   checks.push(...nvidiaCryptoResult.checks);
-  evidenceStatus.nvidia = nvidiaCryptoResult.status;
+  if (mode === "online" && nvidiaCryptoResult.status === "verified") {
+    const nvidiaOnlineResult = await completeNvidiaOnlineVerification({
+      evidenceCount: evidenceList.length,
+      expectedArch: normalizeNvidiaArchitecture(report.nvidia_payload.arch),
+      expectedNonce: nvidiaNonce,
+      options: options.online,
+      payload: report.nvidia_payload,
+    });
+    checks.push(...nvidiaOnlineResult.checks);
+    evidenceStatus.nvidia = nvidiaOnlineResult.status;
+  } else {
+    evidenceStatus.nvidia = nvidiaCryptoResult.status;
+  }
 
   checks.push(...buildEventLogChecks(report));
   checks.push(...buildKeyProviderChecks(report));
 
   const serverClaims = evaluateEmbeddedClaims(report, derivedSigningAddress);
   checks.push(...serverClaims.checks);
-  verifiedAt = serverClaims.verifiedAt;
+  verifiedAt = mode === "online" ? new Date().toISOString() : serverClaims.verifiedAt;
 
   return {
     checks,
     cryptographicStatus: deriveOverallCryptographicStatus(evidenceStatus),
     derivedSigningAddress,
     evidenceStatus,
-    mode: "offline",
+    mode,
     quoteReportData,
     verifiedAt,
   };
@@ -1024,6 +1059,7 @@ async function verifyTdxQuoteCryptography({
   return {
     baseCryptoPassed,
     checks,
+    pckChain: chainResult.chain,
     pckExtensions,
     qeReport,
   };

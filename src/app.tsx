@@ -4,13 +4,18 @@ import CheckList from "./components/CheckList";
 import InputPanel from "./components/InputPanel";
 import VerdictCard from "./components/VerdictCard";
 import { createIdleParseResult, parseReportSource } from "./lib/normalize";
-import type { ParseResult } from "./lib/types";
+import type { ParseResult, VerificationMode } from "./lib/types";
+
+const runtimeEnv = (import.meta as ImportMeta & {
+  env?: Record<string, string | undefined>;
+}).env;
 
 export default function App() {
   const [rawInput, setRawInput] = useState("");
   const [fileName, setFileName] = useState<string | undefined>(undefined);
+  const [nvidiaApiKey, setNvidiaApiKey] = useState("");
   const [result, setResult] = useState<ParseResult>(createIdleParseResult());
-  const [isVerifying, setIsVerifying] = useState(false);
+  const [activeMode, setActiveMode] = useState<VerificationMode | null>(null);
   const [, startTransition] = useTransition();
   const requestIdRef = useRef(0);
 
@@ -23,12 +28,29 @@ export default function App() {
     }
   }
 
-  async function handleVerify() {
+  async function handleVerify(mode: VerificationMode) {
     const requestId = requestIdRef.current + 1;
     requestIdRef.current = requestId;
-    setIsVerifying(true);
+    setActiveMode(mode);
 
-    const nextResult = await parseReportSource(rawInput, fileName);
+    const nextResult = await parseReportSource(rawInput, fileName, {
+      mode,
+      online:
+        mode === "online"
+          ? {
+              intelBaseUrl: sanitizeEnvValue(runtimeEnv?.VITE_INTEL_PCS_BASE_URL),
+              nvidiaApiKey:
+                sanitizeEnvValue(nvidiaApiKey) ??
+                sanitizeEnvValue(runtimeEnv?.VITE_NVIDIA_NRAS_API_KEY),
+              nvidiaBaseUrl:
+                sanitizeEnvValue(runtimeEnv?.VITE_NVIDIA_NRAS_BASE_URL) ??
+                "https://nras.attestation.nvidia.com/v4",
+              nvidiaJwksUrl:
+                sanitizeEnvValue(runtimeEnv?.VITE_NVIDIA_NRAS_JWKS_URL) ??
+                "https://nras.attestation.nvidia.com/.well-known/jwks.json",
+            }
+          : undefined,
+    });
 
     if (requestId !== requestIdRef.current) {
       return;
@@ -37,7 +59,7 @@ export default function App() {
     startTransition(() => {
       setResult(nextResult);
     });
-    setIsVerifying(false);
+    setActiveMode(null);
   }
 
   return (
@@ -62,10 +84,13 @@ export default function App() {
       <main className="page-grid">
         <InputPanel
           className="page-section-input"
+          activeMode={activeMode}
           fileName={fileName}
-          isVerifying={isVerifying}
           onInputChange={handleReportInputChange}
-          onVerify={handleVerify}
+          onNvidiaApiKeyChange={setNvidiaApiKey}
+          onVerifyOffline={() => void handleVerify("offline")}
+          onVerifyOnline={() => void handleVerify("online")}
+          nvidiaApiKey={nvidiaApiKey}
           rawInput={rawInput}
         />
         <VerdictCard
@@ -107,4 +132,8 @@ export default function App() {
       </footer>
     </div>
   );
+}
+
+function sanitizeEnvValue(value?: string): string | undefined {
+  return value && value.trim().length > 0 ? value.trim() : undefined;
 }
