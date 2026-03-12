@@ -1386,66 +1386,125 @@ async function fetchNrasAttestation({
   | { checks: CheckResult[]; ok: true; value: unknown }
 > {
   try {
-    const headers = new Headers({
-      accept: "application/json",
-      "content-type": "application/json",
-    });
-    if (apiKey && apiKey.trim().length > 0) {
-      headers.set("authorization", `Bearer ${apiKey.trim()}`);
+    const attempts = buildNrasAuthAttempts(apiKey);
+    const url = `${baseUrl}/attest/gpu`;
+
+    for (const [attemptIndex, attempt] of attempts.entries()) {
+      const headers = new Headers({
+        accept: "application/json",
+        "content-type": "application/json",
+      });
+
+      if (attempt.headerName && attempt.headerValue) {
+        headers.set(attempt.headerName, attempt.headerValue);
+      }
+
+      const response = await fetchImpl(url, {
+        body: JSON.stringify(payload),
+        headers,
+        method: "POST",
+      });
+      const bodyText = await response.text();
+      const bodySnippet = summarizeResponseBody(bodyText);
+      const usedFallback = attemptIndex > 0;
+      const checks: CheckResult[] = [
+        buildCheck({
+          description: response.ok
+            ? `The NVIDIA NRAS request completed with HTTP ${response.status}.`
+            : `The NVIDIA NRAS request failed with HTTP ${response.status}.`,
+          details: [
+            buildDetail("NRAS URL", url),
+            buildDetail("Authentication scheme", attempt.label),
+            buildDetail("HTTP status", response.status),
+            buildDetail("Retry fallback", usedFallback),
+            buildDetail("Response body", bodySnippet),
+          ],
+          domain: "nvidia",
+          id: "nvidia-online-attest-fetch",
+          jsonPath: "$.nvidia_payload",
+          label: "Submit NVIDIA evidence to NRAS",
+          severity: "advisory",
+          source: "online",
+          status: response.ok ? "pass" : "fail",
+        }),
+      ];
+
+      if (!response.ok) {
+        const shouldRetry =
+          attemptIndex < attempts.length - 1 &&
+          response.status >= 401 &&
+          response.status <= 403;
+        if (shouldRetry) {
+          continue;
+        }
+
+        return { checks, ok: false };
+      }
+
+      if (usedFallback) {
+        checks.push(
+          buildCheck({
+            description: `NRAS accepted the NVIDIA API key after retrying with the ${attempt.label} scheme.`,
+            details: [
+              buildDetail(
+                "Tried schemes",
+                attempts
+                  .slice(0, attemptIndex + 1)
+                  .map((entry) => entry.label)
+                  .join(", "),
+              ),
+            ],
+            domain: "nvidia",
+            id: "nvidia-online-auth-scheme",
+            jsonPath: "$.nvidia_payload",
+            label: "Resolve NVIDIA API key auth scheme",
+            severity: "advisory",
+            source: "online",
+            status: "pass",
+          }),
+        );
+      }
+
+      try {
+        return {
+          checks,
+          ok: true,
+          value: JSON.parse(bodyText),
+        };
+      } catch {
+        checks.push(
+          buildCheck({
+            description:
+              "The NVIDIA NRAS response did not decode as JSON.",
+            domain: "nvidia",
+            id: "nvidia-online-attest-json",
+            jsonPath: "$.nvidia_payload",
+            label: "Decode NVIDIA NRAS response",
+            severity: "advisory",
+            source: "online",
+            status: "fail",
+          }),
+        );
+        return { checks, ok: false };
+      }
     }
 
-    const response = await fetchImpl(`${baseUrl}/attest/gpu`, {
-      body: JSON.stringify(payload),
-      headers,
-      method: "POST",
-    });
-    const checks: CheckResult[] = [
-      buildCheck({
-        description: response.ok
-          ? `The NVIDIA NRAS request completed with HTTP ${response.status}.`
-          : `The NVIDIA NRAS request failed with HTTP ${response.status}.`,
-        details: [
-          buildDetail("NRAS URL", `${baseUrl}/attest/gpu`),
-          buildDetail("Authorization header", headers.has("authorization") ? "Bearer" : "none"),
-          buildDetail("HTTP status", response.status),
-        ],
-        domain: "nvidia",
-        id: "nvidia-online-attest-fetch",
-        jsonPath: "$.nvidia_payload",
-        label: "Submit NVIDIA evidence to NRAS",
-        severity: "advisory",
-        source: "online",
-        status: response.ok ? "pass" : "fail",
-      }),
-    ];
-
-    if (!response.ok) {
-      return { checks, ok: false };
-    }
-
-    const bodyText = await response.text();
-    try {
-      return {
-        checks,
-        ok: true,
-        value: JSON.parse(bodyText),
-      };
-    } catch {
-      checks.push(
+    return {
+      checks: [
         buildCheck({
           description:
-            "The NVIDIA NRAS response did not decode as JSON.",
+            "The NVIDIA NRAS request could not determine a working authentication scheme for the supplied API key.",
           domain: "nvidia",
-          id: "nvidia-online-attest-json",
+          id: "nvidia-online-attest-fetch",
           jsonPath: "$.nvidia_payload",
-          label: "Decode NVIDIA NRAS response",
+          label: "Submit NVIDIA evidence to NRAS",
           severity: "advisory",
           source: "online",
           status: "fail",
         }),
-      );
-      return { checks, ok: false };
-    }
+      ],
+      ok: false,
+    };
   } catch (error) {
     return {
       checks: [
@@ -1466,6 +1525,69 @@ async function fetchNrasAttestation({
       ok: false,
     };
   }
+}
+
+type NrasAuthAttempt = {
+  headerName?: string;
+  headerValue?: string;
+  label: string;
+};
+
+function buildNrasAuthAttempts(apiKey?: string): NrasAuthAttempt[] {
+  const normalizedKey = apiKey?.trim();
+  if (!normalizedKey) {
+    return [{ label: "none" }];
+  }
+
+  const keyLooksLikeNvApi = normalizedKey.startsWith("nvapi-");
+  if (keyLooksLikeNvApi) {
+    return [
+      {
+        headerName: "authorization",
+        headerValue: normalizedKey,
+        label: "raw authorization",
+      },
+      {
+        headerName: "x-api-key",
+        headerValue: normalizedKey,
+        label: "x-api-key",
+      },
+      {
+        headerName: "authorization",
+        headerValue: `Bearer ${normalizedKey}`,
+        label: "bearer token",
+      },
+    ];
+  }
+
+  return [
+    {
+      headerName: "authorization",
+      headerValue: `Bearer ${normalizedKey}`,
+      label: "bearer token",
+    },
+    {
+      headerName: "authorization",
+      headerValue: normalizedKey,
+      label: "raw authorization",
+    },
+    {
+      headerName: "x-api-key",
+      headerValue: normalizedKey,
+      label: "x-api-key",
+    },
+  ];
+}
+
+function summarizeResponseBody(value: string): string {
+  if (value.trim().length === 0) {
+    return "empty";
+  }
+
+  const normalized = value.replace(/\s+/g, " ").trim();
+  return normalized.length > 240
+    ? `${normalized.slice(0, 237)}...`
+    : normalized;
 }
 
 type DecodedJwt = {
@@ -1698,7 +1820,7 @@ function readNestedString(
   let current: unknown = payload[key];
   for (const nestedKey of nestedKeys) {
     if (!isRecord(current)) {
-      continue;
+      return undefined;
     }
 
     const candidate = current[nestedKey];
@@ -1708,6 +1830,8 @@ function readNestedString(
     if (typeof candidate === "boolean") {
       return candidate ? "valid" : "invalid";
     }
+
+    current = candidate;
   }
 
   return undefined;
