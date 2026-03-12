@@ -20,6 +20,14 @@ describe("App", () => {
     parseReportSource.mockResolvedValue({
       checks: [],
       state: "loaded",
+      summary: {
+        eventNames: [],
+        model: "fixture-model",
+        preview: {},
+        teeHardware: "TDX",
+        topLevelKeys: ["report"],
+        verifiedAt: "2026-03-12T01:02:03Z",
+      },
       verification: {
         badge: "Partially verified",
         collateralStatus: "missing",
@@ -66,5 +74,30 @@ describe("App", () => {
       "Current Checks",
       "Decoded Overview",
     ]);
+  });
+
+  it("starts with compact textareas and expands verdict details after verification", async () => {
+    const { default: App } = await import("../src/app");
+    render(<App />);
+
+    const reportTextarea = screen.getByLabelText(
+      "Raw attestation JSON",
+    ) as HTMLTextAreaElement;
+    const collateralTextarea = screen.getByLabelText(
+      "Optional collateral bundle JSON",
+    ) as HTMLTextAreaElement;
+
+    expect(reportTextarea.rows).toBe(2);
+    expect(collateralTextarea.rows).toBe(2);
+    expect(screen.queryByText("Source")).toBeNull();
+    expect(screen.queryByText("fixture-model")).toBeNull();
+
+    fireEvent.change(reportTextarea, {
+      target: { value: '{"report":true}' },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Verify report" }));
+
+    await waitFor(() => expect(screen.getByText("Source")).toBeTruthy());
+    expect(screen.getByText("fixture-model")).toBeTruthy();
   });
 });

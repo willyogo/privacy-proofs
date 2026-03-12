@@ -187,18 +187,14 @@
 
 .json-textarea {
   width: 100%;
-  min-height: 320px;
+  min-height: 5.75rem;
   resize: vertical;
-  padding: 18px;
+  padding: 14px 18px;
   border: 1px solid rgba(255, 255, 255, 0.12);
   border-radius: var(--radius-lg);
   background: rgba(8, 8, 8, 0.32);
   color: var(--text);
   line-height: 1.6;
-}
-
-.json-textarea-compact {
-  min-height: 180px;
 }
 
 .json-textarea:focus {
@@ -261,6 +257,10 @@
 
 .verdict-card {
   overflow: hidden;
+}
+
+.verdict-collapsed {
+  padding-bottom: 24px;
 }
 
 .verdict-row {
@@ -583,7 +583,7 @@
   }
 
   .json-textarea {
-    min-height: 260px;
+    min-height: 5.75rem;
   }
 
   .brand-logo {

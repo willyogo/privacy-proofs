@@ -19,10 +19,12 @@ export default function VerdictCard({
   result,
 }: VerdictCardProps) {
   const tone = toneByStatus[result.verification.status];
+  const summary = result.summary;
+  const shouldShowSummary = summary !== undefined;
 
   return (
     <section
-      className={`panel verdict-card verdict-${tone}${className ? ` ${className}` : ""}`}
+      className={`panel verdict-card verdict-${tone}${shouldShowSummary ? " verdict-expanded" : " verdict-collapsed"}${className ? ` ${className}` : ""}`}
     >
       <div className="verdict-row">
         <span className="status-pill">{result.verification.badge}</span>
@@ -34,44 +36,46 @@ export default function VerdictCard({
         <p>{result.verification.description}</p>
       </div>
 
-      <dl className="summary-grid">
-        <div>
-          <dt>Source</dt>
-          <dd>{fileName ?? "Pasted text"}</dd>
-        </div>
-        <div>
-          <dt>Model</dt>
-          <dd>{result.summary?.model ?? "Unavailable"}</dd>
-        </div>
-        <div>
-          <dt>TEE</dt>
-          <dd>{result.summary?.teeHardware ?? "Unavailable"}</dd>
-        </div>
-        <div>
-          <dt>Checks passed</dt>
-          <dd>
-            {result.verification.supportedChecks > 0
-              ? `${result.verification.passedChecks} / ${result.verification.supportedChecks}`
-              : "Unavailable"}
-          </dd>
-        </div>
-        <div>
-          <dt>Mode</dt>
-          <dd>{result.verification.mode}</dd>
-        </div>
-        <div>
-          <dt>Crypto</dt>
-          <dd>{result.verification.cryptographicStatus}</dd>
-        </div>
-        <div>
-          <dt>Collateral</dt>
-          <dd>{result.verification.collateralStatus}</dd>
-        </div>
-        <div>
-          <dt>Verified at</dt>
-          <dd>{result.summary?.verifiedAt ?? "Not embedded"}</dd>
-        </div>
-      </dl>
+      {shouldShowSummary ? (
+        <dl className="summary-grid">
+          <div>
+            <dt>Source</dt>
+            <dd>{fileName ?? "Pasted text"}</dd>
+          </div>
+          <div>
+            <dt>Model</dt>
+            <dd>{summary.model ?? "Unavailable"}</dd>
+          </div>
+          <div>
+            <dt>TEE</dt>
+            <dd>{summary.teeHardware ?? "Unavailable"}</dd>
+          </div>
+          <div>
+            <dt>Checks passed</dt>
+            <dd>
+              {result.verification.supportedChecks > 0
+                ? `${result.verification.passedChecks} / ${result.verification.supportedChecks}`
+                : "Unavailable"}
+            </dd>
+          </div>
+          <div>
+            <dt>Mode</dt>
+            <dd>{result.verification.mode}</dd>
+          </div>
+          <div>
+            <dt>Crypto</dt>
+            <dd>{result.verification.cryptographicStatus}</dd>
+          </div>
+          <div>
+            <dt>Collateral</dt>
+            <dd>{result.verification.collateralStatus}</dd>
+          </div>
+          <div>
+            <dt>Verified at</dt>
+            <dd>{summary.verifiedAt ?? "Not embedded"}</dd>
+          </div>
+        </dl>
+      ) : null}
     </section>
   );
 }

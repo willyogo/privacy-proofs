@@ -51,6 +51,7 @@ export default function InputPanel({
         className="json-textarea"
         onChange={(event) => onInputChange(event.target.value)}
         placeholder="Paste a Venice attestation report here"
+        rows={2}
         spellCheck={false}
         value={rawInput}
       />
@@ -70,9 +71,10 @@ export default function InputPanel({
       </label>
       <textarea
         id="collateral-json"
-        className="json-textarea json-textarea-compact"
+        className="json-textarea"
         onChange={(event) => onCollateralInputChange(event.target.value)}
         placeholder="Paste optional collateral JSON here"
+        rows={2}
         spellCheck={false}
         value={collateralInput}
       />
