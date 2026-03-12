@@ -1,6 +1,5 @@
 import {
   defineConfig,
-  type Connect,
   type Plugin,
   type PreviewServer,
   type ViteDevServer,
@@ -17,8 +16,27 @@ import {
   proxyNvidiaJwksRequest,
 } from "./src/lib/nvidia-collateral-proxy";
 
+type ProxyRequest = {
+  headers?: Record<string, string | string[] | undefined>;
+  method?: string;
+  url?: string;
+  [Symbol.asyncIterator]?: () => AsyncIterator<
+    Uint8Array | string | ArrayBuffer | ArrayBufferView
+  >;
+};
+
+type ProxyResponse = {
+  end: (body?: Uint8Array | string) => void;
+  setHeader: (name: string, value: string) => void;
+  statusCode: number;
+};
+
 function intelCollateralProxyPlugin(): Plugin {
-  const handleRequest: Connect.NextHandleFunction = async (req, res, next) => {
+  const handleRequest = async (
+    req: ProxyRequest,
+    res: ProxyResponse,
+    next: (error?: unknown) => void,
+  ) => {
     const requestUrl = new URL(req.url ?? "/", "http://127.0.0.1");
     if (
       requestUrl.pathname !== INTEL_PROXY_ROUTE &&
@@ -68,28 +86,41 @@ function intelCollateralProxyPlugin(): Plugin {
 
   return {
     configurePreviewServer(server: PreviewServer) {
-      server.middlewares.use(handleRequest);
+      server.middlewares.use(
+        handleRequest as (
+          req: { method?: string; url?: string },
+          res: ProxyResponse,
+          next: (error?: unknown) => void,
+        ) => void | Promise<void>,
+      );
     },
     configureServer(server: ViteDevServer) {
-      server.middlewares.use(handleRequest);
+      server.middlewares.use(
+        handleRequest as (
+          req: { method?: string; url?: string },
+          res: ProxyResponse,
+          next: (error?: unknown) => void,
+        ) => void | Promise<void>,
+      );
     },
     name: "intel-collateral-proxy",
   };
 }
 
 async function readRequestBody(
-  req: Connect.IncomingMessage,
+  req: ProxyRequest,
 ): Promise<ArrayBuffer | undefined> {
+  if (!req[Symbol.asyncIterator]) {
+    return undefined;
+  }
+
   const chunks: Uint8Array[] = [];
 
-  for await (const chunk of req) {
-    chunks.push(
-      typeof chunk === "string"
-        ? new TextEncoder().encode(chunk)
-        : chunk instanceof Uint8Array
-          ? chunk
-          : new Uint8Array(chunk),
-    );
+  const iterable = req as AsyncIterable<
+    Uint8Array | string | ArrayBuffer | ArrayBufferView
+  >;
+  for await (const chunk of iterable) {
+    chunks.push(toUint8Array(chunk));
   }
 
   if (chunks.length === 0) {
@@ -106,6 +137,24 @@ async function readRequestBody(
   }
 
   return Uint8Array.from(output).buffer;
+}
+
+function toUint8Array(
+  chunk: Uint8Array | string | ArrayBuffer | ArrayBufferView,
+): Uint8Array {
+  if (typeof chunk === "string") {
+    return new TextEncoder().encode(chunk);
+  }
+
+  if (chunk instanceof Uint8Array) {
+    return chunk;
+  }
+
+  if (chunk instanceof ArrayBuffer) {
+    return new Uint8Array(chunk);
+  }
+
+  return new Uint8Array(chunk.buffer, chunk.byteOffset, chunk.byteLength);
 }
 
 export default defineConfig({
