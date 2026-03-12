@@ -110,12 +110,21 @@ describe("App", () => {
     const { default: App } = await import("../src/app");
     render(<App />);
 
+    const nvidiaApiKeyLink = screen.getByRole("link", { name: "NVIDIA API key" });
+    expect(nvidiaApiKeyLink.getAttribute("href")).toBe("https://build.nvidia.com/");
+    expect(nvidiaApiKeyLink.getAttribute("target")).toBe("_blank");
+
     fireEvent.change(screen.getByLabelText("Raw attestation JSON"), {
       target: { value: '{"report":true}' },
     });
-    fireEvent.change(screen.getByLabelText("Optional NVIDIA NRAS API key"), {
-      target: { value: "fixture-api-key" },
-    });
+    fireEvent.change(
+      screen.getByLabelText(
+        "NVIDIA API key (optional for local verification, required for live vendor verification)",
+      ),
+      {
+        target: { value: "fixture-api-key" },
+      },
+    );
 
     fireEvent.click(
       screen.getByRole("button", { name: "Complete full verification" }),

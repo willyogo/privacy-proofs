@@ -229,9 +229,20 @@
   color: var(--text-soft);
 }
 
+.textarea-label a {
+  color: var(--gold-strong);
+  text-decoration-color: rgba(240, 207, 155, 0.72);
+}
+
+.textarea-label a:hover,
+.textarea-label a:focus-visible {
+  color: #fff2d2;
+}
+
 .json-textarea {
   width: 100%;
   min-height: 5.75rem;
+  margin-bottom: 16px;
   resize: vertical;
   padding: 14px 18px;
   border: 1px solid rgba(255, 255, 255, 0.12);
