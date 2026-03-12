@@ -63,8 +63,9 @@ export default function InputPanel({
 
       <p className="panel-note">
         The current engine performs typed normalization, local bindings,
-        certificate-chain validation, Intel and NVIDIA cryptographic checks,
-        and advisory inspection of embedded Venice or NRAS provenance already
+        certificate-chain validation, NVIDIA evidence verification, Intel quote
+        cryptography with optional collateral evaluation when present, and
+        advisory inspection of embedded Venice or NRAS provenance already
         present in the raw report.
       </p>
     </section>

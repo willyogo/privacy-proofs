@@ -243,7 +243,7 @@ function buildVerificationSummary({
       badge: "Verified",
       cryptographicStatus,
       description:
-        "Blocking local structure, binding, certificate, and cryptographic checks passed.",
+        "All independently supported local evidence checks passed, including full cryptographic verification for each verified evidence path.",
       evidenceStatus,
       engineLabel: "Engine active",
       failedChecks,
@@ -261,7 +261,7 @@ function buildVerificationSummary({
     badge: "Partially verified",
     cryptographicStatus,
     description:
-      "Blocking local checks passed, but the raw report did not contain enough supported evidence to complete every independent verification path.",
+      "Blocking local checks passed, but one or more evidence paths remained incomplete, unsupported, or collateral-limited, so the app did not reach a full independent verification result.",
     evidenceStatus,
     engineLabel: "Engine active",
     failedChecks,

@@ -5,13 +5,13 @@
 You can paste raw JSON or upload a report file, and the app will:
 
 - parse and normalize the report with explicit schemas
-- validate local bindings, certificate chains, Intel TDX quote cryptography, and NVIDIA raw evidence in the browser
+- validate local bindings, certificate chains, Intel TDX quote cryptography with collateral evaluation when present, and NVIDIA raw evidence in the browser
 - treat embedded `verified`, `server_verification`, and `verifiedAt` fields as advisory provenance only
 - show a verdict of `Verified`, `Partially verified`, or `Verification failed`
 
 ## Purpose
 
-This repo exists to make Venice attestation reports easier to inspect without sending the report to a backend service. The current build performs real local validation for report structure, internal bindings, certificate chains, Intel TDX quote cryptography, and NVIDIA evidence signatures using only the raw report bytes Venice exposes.
+This repo exists to make Venice attestation reports easier to inspect without sending the report to a backend service. The current build performs real local validation for report structure, internal bindings, certificate chains, Intel TDX quote cryptography, optional Intel collateral, and NVIDIA evidence signatures using only the raw report bytes Venice exposes.
 
 Today, the app is best understood as a transparent verifier UI with an independent local verification engine that refuses to upgrade embedded Venice or NRAS claims into proof on their own.
 
@@ -35,20 +35,22 @@ The app is a Vite + React + TypeScript single-page application.
    - equality checks across duplicated signing key fields
    - nonce consistency between top-level and nested payloads
    - app certificate chain validation against a pinned trust store
+   - advisory app-certificate diagnostics that do not upgrade or invalidate a report on their own
    - Intel PCK certificate chain validation against a pinned trust store
    - Intel quote signature validation against the embedded attestation key
    - QE report signature validation against the Intel PCK leaf certificate
    - QE report-data binding between the attestation key and QE auth data
    - report-data binding between signing address and nonce
+   - Intel QE identity and TCB collateral validation when the raw report includes a complete collateral set
    - TDX measurement checks (`MRTD`, `RTMR0-3`, `MRCONFIGID`)
-   - event log consistency checks against the `info` / `tcb_info` block
+   - event log consistency checks against the `info` / `tcb_info` block, including duplicate-value ambiguity failures for security-critical events
    - key-provider metadata consistency checks
    - NVIDIA certificate-chain validation against a pinned trust store
-   - NVIDIA raw-evidence parsing, signature verification, nonce binding, FWID binding, and architecture binding
+   - NVIDIA raw-evidence parsing, signature verification, nonce binding, FWID binding, and opaque-data checks
    - advisory inspection of embedded Venice or NRAS provenance already present in the raw report
 7. `buildVerificationSummary(...)` classifies the result:
-   - `Verified`: all blocking local checks passed and the app independently completed all supported cryptographic verification
-   - `Partially verified`: all blocking local checks passed, but the raw report did not contain enough supported evidence to complete every independent verification path
+   - `Verified`: all blocking local checks passed and every supported evidence path reached a full independent local verification result
+   - `Partially verified`: all blocking local checks passed, but at least one evidence path remained incomplete, unsupported, advisory-only, or collateral-limited
    - `Verification failed`: one or more blocking local checks failed
 8. React components render:
    - a verdict summary card
@@ -68,7 +70,8 @@ The main remaining limits are:
 That means a positive result in this app should currently be read as:
 
 - blocking local bindings, schema checks, and supported certificate/signature checks passed, and
-- unsupported evidence paths remained partial instead of being silently treated as verified
+- quote-only Intel evidence remains `Partially verified` unless the raw report also includes a complete, valid collateral set, and
+- advisory-only metadata such as `info.app_cert` or embedded `server_verification` never upgrades a report into `Verified`
 
 It should be read as proof only for the evidence paths the app independently re-derived from the supplied raw report bytes.
 
@@ -115,7 +118,7 @@ npm test
 Notes:
 
 - The test suite is repo-local and does not depend on a machine-specific report path.
-- Current tests cover schema failures, verdict construction, unsupported quote versions, explicit verify UI flow, raw-report-only verification behavior, and NVIDIA raw-evidence verification.
+- Current tests cover schema failures, verdict construction, unsupported quote versions, explicit verify UI flow, raw-report-only verification behavior, certificate-anchor negatives, duplicate event-log ambiguity, advisory app certificates, Intel collateral downgrades, and NVIDIA raw-evidence verification.
 - The remaining fixture gap is a single repo-local Venice report that reaches `Verified` end-to-end.
 
 ### Build for production

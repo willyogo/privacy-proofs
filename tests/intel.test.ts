@@ -3,6 +3,7 @@ import { validateCertificateChain } from "../src/lib/certificates";
 import {
   evaluateQeIdentity,
   evaluateTcbInfo,
+  isCollateralCurrent,
   parseIntelPckExtensions,
   parseQeReport,
   verifyIntelCollateralSignature,
@@ -143,5 +144,14 @@ describe("Intel collateral verification", () => {
 
     expect(tcbEvaluation.fmspcMatch).toBe(false);
     expect(tcbEvaluation.acceptable).toBe(false);
+  });
+
+  it("treats expired collateral as not current", () => {
+    expect(
+      isCollateralCurrent({
+        issueDate: "2021-08-06T13:55:15Z",
+        nextUpdate: "2021-08-07T13:55:15Z",
+      }, new Date("2026-03-12T00:00:00Z")),
+    ).toBe(false);
   });
 });
