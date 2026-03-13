@@ -566,6 +566,7 @@ export async function completeNvidiaOnlineVerification({
   const overallResult = readBooleanish(
     readClaim(overallJwt.payload, "x-nvidia-overall-att-result"),
   );
+  let everyDeviceClaimComplete = true;
   checks.push(
     buildCheck({
       description:
@@ -620,6 +621,9 @@ export async function completeNvidiaOnlineVerification({
       readClaim(payloadClaims, "x-nvidia-gpu-arch-check"),
     );
     const measurementResult = readClaim(payloadClaims, "measres");
+    const archClaimPresent = archCheck !== undefined;
+    const measurementClaimPresent = measurementResult !== undefined;
+    everyDeviceClaimComplete &&= archClaimPresent && measurementClaimPresent;
 
     checks.push(
       buildCheck({
@@ -705,7 +709,7 @@ export async function completeNvidiaOnlineVerification({
         label: "Inspect NVIDIA architecture claim",
         severity: "blocking",
         source: "online",
-        status: archCheck === undefined || archCheck ? "pass" : "fail",
+        status: archCheck === undefined ? "info" : archCheck ? "pass" : "fail",
       }),
     );
 
@@ -725,8 +729,9 @@ export async function completeNvidiaOnlineVerification({
         severity: "blocking",
         source: "online",
         status:
-          measurementResult === undefined ||
-          String(measurementResult).toLowerCase() === "success"
+          measurementResult === undefined
+            ? "info"
+            : String(measurementResult).toLowerCase() === "success"
             ? "pass"
             : "fail",
       }),
@@ -735,7 +740,8 @@ export async function completeNvidiaOnlineVerification({
 
   return {
     checks,
-    status: hasBlockingFailures(checks) ? "partial" : "verified",
+    status:
+      hasBlockingFailures(checks) || !everyDeviceClaimComplete ? "partial" : "verified",
   };
 }
 
