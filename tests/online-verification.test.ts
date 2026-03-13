@@ -243,6 +243,117 @@ describe("online verification", () => {
       result.checks.find((check) => check.id === "nvidia-online-device-signature-0")?.status,
     ).toBe("pass");
   });
+
+  it("downgrades to partial when NRAS omits measurement-completeness claims", async () => {
+    const nonce = "bb".repeat(32);
+    const jwkKid = "fixture-key";
+    const keyPair = await crypto.subtle.generateKey(
+      {
+        name: "ECDSA",
+        namedCurve: "P-256",
+      },
+      true,
+      ["sign", "verify"],
+    );
+    const exportedJwk = await crypto.subtle.exportKey("jwk", keyPair.publicKey);
+    const publicJwk = Object.assign({}, exportedJwk, {
+      alg: "ES256",
+      kid: jwkKid,
+      use: "sig",
+    }) as JsonWebKey;
+    const overallJwt = await signJwt({
+      header: {
+        alg: "ES256",
+        kid: jwkKid,
+        typ: "JWT",
+      },
+      payload: {
+        eat_nonce: nonce,
+        "x-nvidia-overall-att-result": true,
+      },
+      privateKey: keyPair.privateKey,
+    });
+    const deviceJwt = await signJwt({
+      header: {
+        alg: "ES256",
+        kid: jwkKid,
+        typ: "JWT",
+      },
+      payload: {
+        eat_nonce: nonce,
+        "x-nvidia-gpu-attestation-report-cert-chain": {
+          "x-nvidia-cert-status": {
+            "x-nvidia-cert-chain-status": true,
+          },
+        },
+        "x-nvidia-gpu-attestation-report-nonce-match": true,
+        "x-nvidia-gpu-attestation-report-signature-verified": true,
+      },
+      privateKey: keyPair.privateKey,
+    });
+
+    const result = await completeNvidiaOnlineVerification({
+      evidenceCount: 1,
+      expectedArch: "HOPPER",
+      expectedNonce: nonce,
+      options: {
+        fetchImpl: async (input) => {
+          const url = String(input);
+
+          if (url.endsWith("/attest/gpu")) {
+            return new Response(
+              JSON.stringify({
+                detached_eat: [overallJwt, { gpu0: deviceJwt }],
+              }),
+              {
+                headers: {
+                  "content-type": "application/json",
+                },
+                status: 200,
+              },
+            );
+          }
+
+          if (url.endsWith("/jwks.json")) {
+            return new Response(
+              JSON.stringify({
+                keys: [publicJwk],
+              }),
+              {
+                headers: {
+                  "content-type": "application/json",
+                },
+                status: 200,
+              },
+            );
+          }
+
+          throw new Error(`Unexpected URL ${url}`);
+        },
+        nvidiaBaseUrl: "https://example.test/v4",
+        nvidiaJwksUrl: "https://example.test/.well-known/jwks.json",
+      },
+      payload: {
+        arch: "HOPPER",
+        evidence_list: [
+          {
+            arch: "HOPPER",
+            certificate: "fixture-certificate",
+            evidence: "fixture-evidence",
+          },
+        ],
+        nonce,
+      },
+    });
+
+    expect(result.status).toBe("partial");
+    expect(
+      result.checks.find((check) => check.id === "nvidia-online-device-claim-arch-0")?.status,
+    ).toBe("info");
+    expect(
+      result.checks.find((check) => check.id === "nvidia-online-device-claim-measurement-0")?.status,
+    ).toBe("info");
+  });
 });
 
 async function signJwt({

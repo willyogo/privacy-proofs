@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { parseReportSource } from "../src/lib/normalize";
+import { replaySyntheticRtmrs, withSyntheticDigests } from "./fixtures/eventLog";
 
 const BASE_SIGNING_PUBLIC_KEY =
   "049eb9f800a6d38ac3c30526d812ba9aa49fc0e5f14d7f67ae17e56aa4d9a43f1c274540b74dab8405b5fef5dfbe3431bf5ad7efcf7279008b460c4930bb8f6606";
@@ -16,6 +17,7 @@ const KEY_PROVIDER_INFO_HEX = Array.from(new TextEncoder().encode(KEY_PROVIDER_I
 
 describe("parseReportSource", () => {
   afterEach(() => {
+    vi.useRealTimers();
     vi.unstubAllGlobals();
   });
 
@@ -102,46 +104,72 @@ describe("parseReportSource", () => {
 
     expect(fetchSpy).not.toHaveBeenCalled();
   });
+
+  it("fails when the event log replay does not match the quote RTMRs", async () => {
+    const report = buildBaseReport();
+    report.event_log = report.event_log.map((entry, index) => {
+      if (index !== 0) {
+        return entry;
+      }
+
+      return {
+        ...entry,
+        digest: "ff".repeat(48),
+      };
+    });
+
+    const result = await parseReportSource(JSON.stringify(report), "tampered-event-log.json");
+
+    expect(result.verification.status).toBe("invalid");
+    expect(
+      result.checks.find((check) => check.id === "event-log-rtmr3")?.status,
+    ).toBe("fail");
+  });
+
+  it("uses the local verifier time rather than embedded verifiedAt in offline summaries", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-03-13T17:45:00.000Z"));
+
+    const result = await parseReportSource(JSON.stringify(buildBaseReport()), "fixture.json");
+
+    expect(result.summary?.verifiedAt).toBe("2026-03-13T17:45:00.000Z");
+  });
 });
 
 function buildBaseReport(overrides: Record<string, unknown> = {}) {
-  const eventLog = [
+  const eventLog = withSyntheticDigests([
     {
-      digest: "aa",
       event: "app-id",
       event_payload: "2c0a0c96cb6dbd659bf1446e2f3fce58172ff91b",
       event_type: 134217729,
       imr: 3,
     },
     {
-      digest: "bb",
       event: "compose-hash",
       event_payload: "39eaa3f466bb30f10e9d2be1b103b2d97d452f4d3dd15fcc9c6fb1f1023bfdba",
       event_type: 134217729,
       imr: 3,
     },
     {
-      digest: "cc",
       event: "instance-id",
       event_payload: "d91376e26c0be974730f66ca0cc9dadb2f0e3a85",
       event_type: 134217729,
       imr: 3,
     },
     {
-      digest: "dd",
       event: "os-image-hash",
       event_payload: "9b69bb1698bacbb6985409a2c272bcb892e09cdcea63d5399c6768b67d3ff677",
       event_type: 134217729,
       imr: 3,
     },
     {
-      digest: "ee",
       event: "key-provider",
       event_payload: KEY_PROVIDER_INFO_HEX,
       event_type: 134217729,
       imr: 3,
     },
-  ];
+  ]);
+  const rtmrs = replaySyntheticRtmrs(eventLog);
 
   return {
     event_log: eventLog,
@@ -156,13 +184,13 @@ function buildBaseReport(overrides: Record<string, unknown> = {}) {
         event_log: eventLog,
         mrtd: "00".repeat(48),
         os_image_hash: "9b69bb1698bacbb6985409a2c272bcb892e09cdcea63d5399c6768b67d3ff677",
-        rtmr0: "00".repeat(48),
-        rtmr1: "00".repeat(48),
-        rtmr2: "00".repeat(48),
-        rtmr3: "00".repeat(48),
+        rtmr0: rtmrs.rtmr0,
+        rtmr1: rtmrs.rtmr1,
+        rtmr2: rtmrs.rtmr2,
+        rtmr3: rtmrs.rtmr3,
       },
     },
-    intel_quote: buildQuoteHex({ version: 4 }),
+    intel_quote: buildQuoteHex({ rtmrs, version: 4 }),
     nvidia_payload: JSON.stringify({
       arch: "HOPPER",
       evidence_list: [
@@ -193,9 +221,11 @@ function buildBaseReport(overrides: Record<string, unknown> = {}) {
 
 function buildQuoteHex({
   mrConfigIdHex,
+  rtmrs,
   version,
 }: {
   mrConfigIdHex?: string;
+  rtmrs?: Record<"rtmr0" | "rtmr1" | "rtmr2" | "rtmr3", string>;
   version: number;
 }) {
   const authDataLength = 64 + 64 + 6 + 384 + 64 + 2 + 6;
@@ -207,6 +237,13 @@ function buildQuoteHex({
   if (mrConfigIdHex) {
     const mrConfigIdBytes = hexToBytes(mrConfigIdHex);
     quote.set(mrConfigIdBytes, 48 + 184);
+  }
+
+  if (rtmrs) {
+    quote.set(hexToBytes(rtmrs.rtmr0), 48 + 328);
+    quote.set(hexToBytes(rtmrs.rtmr1), 48 + 376);
+    quote.set(hexToBytes(rtmrs.rtmr2), 48 + 424);
+    quote.set(hexToBytes(rtmrs.rtmr3), 48 + 472);
   }
 
   let offset = 636;

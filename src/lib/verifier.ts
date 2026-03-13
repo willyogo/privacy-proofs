@@ -6,6 +6,7 @@ import { validateCertificateChain } from "./certificates";
 import {
   concatBytes,
   sha256Hex,
+  sha384Hex,
   toArrayBuffer,
   toHex,
   verifyEcdsaSignature,
@@ -102,6 +103,8 @@ const TDX_QE_REPORT_REPORT_DATA_OFFSET = 320;
 const TDX_QE_REPORT_REPORT_DATA_LENGTH = 64;
 const TDX_QE_REPORT_CERTIFICATION_DATA_TYPE = 6;
 const TDX_PCK_CERT_CHAIN_CERTIFICATION_DATA_TYPE = 5;
+const RTMR_DIGEST_BYTES = 48;
+const RTMR_NAMES = ["rtmr0", "rtmr1", "rtmr2", "rtmr3"] as const;
 
 type DecodedQuote = {
   attestationPublicKey?: Uint8Array;
@@ -434,12 +437,12 @@ export async function verifyNormalizedReport(
     evidenceStatus.nvidia = nvidiaCryptoResult.status;
   }
 
-  checks.push(...buildEventLogChecks(report));
+  checks.push(...buildEventLogChecks({ quote, report }));
   checks.push(...buildKeyProviderChecks(report));
 
   const serverClaims = evaluateEmbeddedClaims(report, derivedSigningAddress);
   checks.push(...serverClaims.checks);
-  verifiedAt = mode === "online" ? new Date().toISOString() : serverClaims.verifiedAt;
+  verifiedAt = new Date().toISOString();
 
   return {
     checks,
@@ -526,10 +529,17 @@ function buildMeasurementChecks({
   return checks;
 }
 
-function buildEventLogChecks(report: NormalizedAttestationReport): CheckResult[] {
+function buildEventLogChecks({
+  quote,
+  report,
+}: {
+  quote?: DecodedQuote;
+  report: NormalizedAttestationReport;
+}): CheckResult[] {
   const eventMap = collectNamedEventPayloads(report.event_log);
   const info = asInfoBlock(report.info);
   const tcbInfo = asTcbInfo(info?.tcb_info);
+  const replay = replayEventLogRtmrs(report.event_log);
   const checks: CheckResult[] = [
     buildHexEventBindingCheck({
       actualValues: eventMap["app-id"] ?? [],
@@ -563,6 +573,26 @@ function buildEventLogChecks(report: NormalizedAttestationReport): CheckResult[]
       matchingDescription: "The event log OS image hash matches the TCB info.",
       mismatchDescription: "The event log OS image hash does not match the TCB info.",
     }),
+    buildCheck({
+      description:
+        replay.invalidEntries === 0 && replay.replayedEntryCount > 0
+          ? "The event log exposes replayable SHA-384 digests and IMR indices for RTMR reconstruction."
+          : replay.invalidEntries > 0
+            ? "One or more event-log entries are missing a valid 48-byte SHA-384 digest or an RTMR index in the 0-3 range."
+            : "The event log did not contain any replayable SHA-384 digest entries, so it cannot be authenticated against the quote RTMRs.",
+      details: [
+        buildDetail("Replayable entries", replay.replayedEntryCount),
+        buildDetail("Invalid or unsupported entries", replay.invalidEntries),
+      ],
+      domain: "event-log",
+      id: "event-log-rtmr-replay-support",
+      jsonPath: "$.event_log",
+      label: "Prepare event log RTMR replay",
+      severity: "blocking",
+      source: "local",
+      status:
+        replay.invalidEntries === 0 && replay.replayedEntryCount > 0 ? "pass" : "fail",
+    }),
   ];
 
   if (Array.isArray(report.event_log) && Array.isArray(tcbInfo?.event_log)) {
@@ -582,6 +612,63 @@ function buildEventLogChecks(report: NormalizedAttestationReport): CheckResult[]
           JSON.stringify(report.event_log) === JSON.stringify(tcbInfo.event_log)
             ? "pass"
             : "fail",
+      }),
+    );
+  }
+
+  if (!quote) {
+    checks.push(
+      buildCheck({
+        description:
+          "The event log could not be authenticated against the quote RTMRs because the Intel quote did not decode successfully.",
+        domain: "event-log",
+        id: "event-log-rtmr-replay-support",
+        jsonPath: "$.event_log",
+        label: "Prepare event log RTMR replay",
+        severity: "blocking",
+        source: "local",
+        status: "fail",
+      }),
+    );
+
+    return checks;
+  }
+
+  for (const rtmr of RTMR_NAMES) {
+    const replayedValue = replay.rtmrs[rtmr];
+    const replayedEntries = replay.replayedEntries[rtmr];
+    const quoteValue = quote[rtmr];
+    const quoteIsZero = isAllZeroHex(quoteValue);
+
+    checks.push(
+      buildCheck({
+        description:
+          replayedEntries > 0 && replayedValue === quoteValue
+            ? `${rtmr.toUpperCase()} reconstructed from the event-log digests matches the quote measurement.`
+            : replayedEntries === 0 && quoteIsZero
+              ? `${rtmr.toUpperCase()} has no replayable event-log entries and remains all-zero in the quote.`
+              : replayedEntries === 0
+                ? `${rtmr.toUpperCase()} is non-zero in the quote, but the event log does not contain replayable entries for that register.`
+                : `${rtmr.toUpperCase()} reconstructed from the event-log digests does not match the quote measurement.`,
+        details: [
+          buildDetail("Replayable event count", replayedEntries),
+          buildDetail("Replayed RTMR value", replayedEntries > 0 ? replayedValue : undefined),
+          buildDetail("Quote RTMR value", quoteValue),
+        ],
+        domain: "event-log",
+        id: `event-log-${rtmr}`,
+        jsonPath: "$.event_log",
+        label: `Replay event log into ${rtmr.toUpperCase()}`,
+        severity: "blocking",
+        source: "local",
+        status:
+          replayedEntries > 0
+            ? replayedValue === quoteValue
+              ? "pass"
+              : "fail"
+            : quoteIsZero
+              ? "info"
+              : "fail",
       }),
     );
   }
@@ -1752,6 +1839,51 @@ function distinctNormalizedValues(values: string[]): string[] {
   );
 }
 
+function replayEventLogRtmrs(value: NormalizedAttestationReport["event_log"]): {
+  invalidEntries: number;
+  replayedEntries: Record<(typeof RTMR_NAMES)[number], number>;
+  replayedEntryCount: number;
+  rtmrs: Record<(typeof RTMR_NAMES)[number], string>;
+} {
+  const rtmrs = Object.fromEntries(
+    RTMR_NAMES.map((name) => [name, "00".repeat(RTMR_DIGEST_BYTES)]),
+  ) as Record<(typeof RTMR_NAMES)[number], string>;
+  const replayedEntries = Object.fromEntries(
+    RTMR_NAMES.map((name) => [name, 0]),
+  ) as Record<(typeof RTMR_NAMES)[number], number>;
+  let invalidEntries = 0;
+  let replayedEntryCount = 0;
+
+  for (const entry of value) {
+    if (!isRecord(entry)) {
+      invalidEntries += 1;
+      continue;
+    }
+
+    const digest = normalizeHex(entry.digest);
+    const imr = typeof entry.imr === "number" && Number.isInteger(entry.imr) ? entry.imr : undefined;
+    if (!digest || digest.length !== RTMR_DIGEST_BYTES * 2 || imr === undefined || imr < 0 || imr > 3) {
+      invalidEntries += 1;
+      continue;
+    }
+
+    const rtmr = RTMR_NAMES[imr];
+    const previousValue = rtmrs[rtmr];
+    rtmrs[rtmr] = sha384Hex(
+      concatBytes(hexToBytes(`0x${previousValue}`), hexToBytes(`0x${digest}`)),
+    );
+    replayedEntries[rtmr] += 1;
+    replayedEntryCount += 1;
+  }
+
+  return {
+    invalidEntries,
+    replayedEntries,
+    replayedEntryCount,
+    rtmrs,
+  };
+}
+
 function extractIntelCollateral(report: NormalizedAttestationReport): {
   qeIdentity: CollateralField<IntelSignedQeIdentity>;
   signedTcbInfo: CollateralField<IntelSignedTcbInfo>;
@@ -1873,6 +2005,10 @@ function normalizeAddress(value: unknown): string | undefined {
   } catch {
     return undefined;
   }
+}
+
+function isAllZeroHex(value: string): boolean {
+  return /^0+$/u.test(value);
 }
 
 function normalizeBase64(value: unknown): Uint8Array | undefined {

@@ -6,6 +6,7 @@ import {
   INTEL_TDX_TCB_INFO,
   INTEL_TDX_TCB_SIGN_CHAIN,
 } from "./fixtures/intelVendor";
+import { replaySyntheticRtmrs, withSyntheticDigests } from "./fixtures/eventLog";
 
 const mocks = vi.hoisted(() => ({
   completeIntelOnlineVerification: vi.fn(),
@@ -326,6 +327,34 @@ describe("verdict construction", () => {
       result.checks.find((check) => check.id === "nvidia-online-auth")?.source,
     ).toBe("online");
   });
+
+  it("excludes embedded provenance passes from the headline check count", async () => {
+    const result = await parseReportSource(
+      JSON.stringify(
+        buildReport({
+          serverVerification: {
+            nvidia: { valid: true },
+            signingAddressBinding: {
+              reportDataAddress: BASE_SIGNING_ADDRESS,
+            },
+            tdx: { valid: true },
+            verifiedAt: "2026-03-11T15:42:20.617Z",
+          },
+        }),
+      ),
+      "fixture.json",
+    );
+
+    const nonEmbeddedSupportedChecks = result.checks.filter(
+      (check) => check.source !== "embedded" && check.status !== "info",
+    ).length;
+    const embeddedPassingChecks = result.checks.filter(
+      (check) => check.source === "embedded" && check.status === "pass",
+    ).length;
+
+    expect(embeddedPassingChecks).toBeGreaterThan(0);
+    expect(result.verification.supportedChecks).toBe(nonEmbeddedSupportedChecks);
+  });
 });
 
 function buildReport({
@@ -336,6 +365,7 @@ function buildReport({
   intelSignedTcbInfo,
   intelTcbSignChain,
   payloadArch = entryArch,
+  serverVerification,
 }: {
   appCert?: string;
   duplicateEvents?: Array<{ event: string; event_payload: string }>;
@@ -344,56 +374,53 @@ function buildReport({
   intelSignedTcbInfo?: unknown;
   intelTcbSignChain?: string;
   payloadArch?: string;
+  serverVerification?: Record<string, unknown>;
 } = {}) {
   const composeHash =
     "39eaa3f466bb30f10e9d2be1b103b2d97d452f4d3dd15fcc9c6fb1f1023bfdba";
-  const baseEventLog = [
+  const baseEventLog = withSyntheticDigests([
     {
-      digest: "aa",
       event: "app-id",
       event_payload: "2c0a0c96cb6dbd659bf1446e2f3fce58172ff91b",
       event_type: 134217729,
       imr: 3,
     },
     {
-      digest: "bb",
       event: "compose-hash",
       event_payload: composeHash,
       event_type: 134217729,
       imr: 3,
     },
     {
-      digest: "cc",
       event: "instance-id",
       event_payload: "d91376e26c0be974730f66ca0cc9dadb2f0e3a85",
       event_type: 134217729,
       imr: 3,
     },
     {
-      digest: "dd",
       event: "os-image-hash",
       event_payload: "9b69bb1698bacbb6985409a2c272bcb892e09cdcea63d5399c6768b67d3ff677",
       event_type: 134217729,
       imr: 3,
     },
     {
-      digest: "ee",
       event: "key-provider",
       event_payload: KEY_PROVIDER_INFO_HEX,
       event_type: 134217729,
       imr: 3,
     },
-  ];
-  const eventLog = [
+  ]);
+  const eventLog = withSyntheticDigests([
     ...baseEventLog,
     ...duplicateEvents.map((entry, index) => ({
-      digest: `ff${index}`,
       event: entry.event,
       event_payload: entry.event_payload,
       event_type: 134217729,
       imr: 3,
+      index,
     })),
-  ];
+  ]);
+  const rtmrs = replaySyntheticRtmrs(eventLog);
 
   const reportDataHex =
     `${BASE_SIGNING_ADDRESS.slice(2).toLowerCase()}${"0".repeat(24)}${BASE_NONCE}`;
@@ -411,16 +438,16 @@ function buildReport({
         event_log: eventLog,
         mrtd: "00".repeat(48),
         os_image_hash: "9b69bb1698bacbb6985409a2c272bcb892e09cdcea63d5399c6768b67d3ff677",
-        rtmr0: "00".repeat(48),
-        rtmr1: "00".repeat(48),
-        rtmr2: "00".repeat(48),
-        rtmr3: "00".repeat(48),
+        rtmr0: rtmrs.rtmr0,
+        rtmr1: rtmrs.rtmr1,
+        rtmr2: rtmrs.rtmr2,
+        rtmr3: rtmrs.rtmr3,
       },
     },
     ...(intelQeIdentity ? { intel_qe_identity: intelQeIdentity } : {}),
     ...(intelSignedTcbInfo ? { intel_signed_tcb_info: intelSignedTcbInfo } : {}),
     ...(intelTcbSignChain ? { intel_tcb_sign_chain: intelTcbSignChain } : {}),
-    intel_quote: buildQuoteHex({ composeHash, reportDataHex }),
+    intel_quote: buildQuoteHex({ composeHash, reportDataHex, rtmrs }),
     nonce: BASE_NONCE,
     nvidia_payload: {
       arch: payloadArch,
@@ -439,6 +466,7 @@ function buildReport({
     signing_public_key: BASE_SIGNING_PUBLIC_KEY,
     tee_hardware: "intel-tdx",
     tee_provider: "near-ai",
+    ...(serverVerification ? { server_verification: serverVerification } : {}),
     verified: true,
   };
 }
@@ -446,9 +474,11 @@ function buildReport({
 function buildQuoteHex({
   composeHash,
   reportDataHex,
+  rtmrs,
 }: {
   composeHash: string;
   reportDataHex: string;
+  rtmrs: Record<"rtmr0" | "rtmr1" | "rtmr2" | "rtmr3", string>;
 }) {
   const certificationDataBytes = new TextEncoder().encode(
     "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----",
@@ -463,6 +493,10 @@ function buildQuoteHex({
   view.setUint32(632, authDataLength, true);
   quote.set(hexToBytes(`01${composeHash}${"00".repeat(15)}`), 48 + 184);
   quote.set(hexToBytes(reportDataHex), 48 + 520);
+  quote.set(hexToBytes(rtmrs.rtmr0), 48 + 328);
+  quote.set(hexToBytes(rtmrs.rtmr1), 48 + 376);
+  quote.set(hexToBytes(rtmrs.rtmr2), 48 + 424);
+  quote.set(hexToBytes(rtmrs.rtmr3), 48 + 472);
 
   let offset = 636;
   offset += 64; // quote signature

@@ -209,10 +209,11 @@ function buildVerificationSummary({
   mode: VerificationSummary["mode"];
   verifiedAt?: string;
 }): VerificationSummary {
-  const supportedChecks = checks.filter((check) => check.status !== "info").length;
-  const passedChecks = checks.filter((check) => check.status === "pass").length;
-  const failedChecks = checks.filter((check) => check.status === "fail").length;
-  const infoChecks = checks.filter((check) => check.status === "info").length;
+  const summaryChecks = checks.filter((check) => check.source !== "embedded");
+  const supportedChecks = summaryChecks.filter((check) => check.status !== "info").length;
+  const passedChecks = summaryChecks.filter((check) => check.status === "pass").length;
+  const failedChecks = summaryChecks.filter((check) => check.status === "fail").length;
+  const infoChecks = summaryChecks.filter((check) => check.status === "info").length;
   const blockingFailures = checks.filter(
     (check) => check.severity === "blocking" && check.status === "fail",
   );

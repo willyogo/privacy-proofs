@@ -7,7 +7,7 @@ You can paste raw JSON or upload a report file, and the app will:
 - parse and normalize the report with explicit schemas
 - validate local bindings, certificate chains, Intel TDX quote cryptography, and NVIDIA raw evidence in the browser
 - optionally complete live vendor verification using Intel PCS and NVIDIA NRAS with only the Venice report as input
-- treat embedded `verified`, `server_verification`, and `verifiedAt` fields as advisory provenance only
+- treat embedded `verified`, `server_verification`, and `verifiedAt` fields as advisory provenance only, never as primary verifier output
 - show a verdict of `Fully verified`, `Locally verified`, `Partially verified`, or `Verification failed`
 
 ## Purpose
@@ -43,7 +43,7 @@ The app is a Vite + React + TypeScript single-page application.
    - QE report-data binding between the attestation key and QE auth data
    - report-data binding between signing address and nonce
    - TDX measurement checks (`MRTD`, `RTMR0-3`, `MRCONFIGID`)
-   - event log consistency checks against the `info` / `tcb_info` block, including duplicate-value ambiguity failures for security-critical events
+   - event log RTMR replay plus consistency checks against the `info` / `tcb_info` block, including duplicate-value ambiguity failures for security-critical events
    - key-provider metadata consistency checks
    - NVIDIA certificate-chain validation against a pinned trust store
    - NVIDIA raw-evidence parsing, signature verification, nonce binding, FWID binding, and opaque-data checks
@@ -77,7 +77,7 @@ That means a positive result in this app should currently be read as:
 
 - `Locally verified` means blocking local bindings, schema checks, and supported certificate/signature checks passed, and
 - `Fully verified` means the app also re-fetched Intel collateral live and completed NVIDIA verification with live NRAS, and
-- advisory-only metadata such as `info.app_cert` or embedded `server_verification` never upgrades a report into `Verified`
+- advisory-only metadata such as `info.app_cert` or embedded `server_verification` never upgrades a report into `Verified` or supplies the primary verification timestamp
 
 It should be read as proof only for the evidence paths the app independently re-derived from the supplied raw report bytes plus live vendor collateral/services.
 
