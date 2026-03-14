@@ -40,6 +40,51 @@ describe("parseReportSource", () => {
     expect(result.checks.some((check) => check.id.startsWith("schema-"))).toBe(true);
   });
 
+  it("parses Venice-style reports with stringified top-level event logs", async () => {
+    const baseReport = buildBaseReport();
+    const result = await parseReportSource(
+      JSON.stringify({
+        ...baseReport,
+        candidates_available: 4,
+        candidates_evaluated: 1,
+        event_log: JSON.stringify(baseReport.event_log),
+        quote: baseReport.intel_quote,
+        vm_config: JSON.stringify({
+          image: "fixture",
+          spec_version: 1,
+        }),
+      }),
+      "venice-stringified-event-log.json",
+    );
+
+    expect(result.checks.find((check) => check.id === "report-schema")?.status).toBe("pass");
+    expect(Array.isArray(result.normalizedReport?.event_log)).toBe(true);
+    expect(result.normalizedReport?.event_log).toHaveLength(baseReport.event_log.length);
+    expect(result.summary?.eventLogCount).toBe(baseReport.event_log.length);
+  });
+
+  it("parses stringified TCB-info event logs without breaking duplication checks", async () => {
+    const baseReport = buildBaseReport();
+    const result = await parseReportSource(
+      JSON.stringify({
+        ...baseReport,
+        info: {
+          ...baseReport.info,
+          tcb_info: {
+            ...baseReport.info.tcb_info,
+            event_log: JSON.stringify(baseReport.event_log),
+          },
+        },
+      }),
+      "stringified-tcb-event-log.json",
+    );
+
+    expect(Array.isArray(result.normalizedReport?.info.tcb_info?.event_log)).toBe(true);
+    expect(
+      result.checks.find((check) => check.id === "event-log-duplication")?.status,
+    ).toBe("pass");
+  });
+
   it("fails verification for compressed signing public keys", async () => {
     const report = buildBaseReport({
       signing_public_key: `02${"11".repeat(32)}`,

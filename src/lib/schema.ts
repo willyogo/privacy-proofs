@@ -11,6 +11,27 @@ import type {
   TcbInfo,
 } from "./types";
 
+function parseJsonEncodedValue<T>(
+  value: string,
+  ctx: z.RefinementCtx,
+  label: string,
+  schema: z.ZodType<T>,
+): T | typeof z.NEVER {
+  try {
+    const parsed = JSON.parse(value);
+    return schema.parse(parsed);
+  } catch (error) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message:
+        error instanceof Error
+          ? `The ${label} could not be decoded as JSON: ${error.message}`
+          : `The ${label} could not be decoded as JSON.`,
+    });
+    return z.NEVER;
+  }
+}
+
 const eventLogEntrySchema = z
   .object({
     digest: z.string().optional(),
@@ -21,12 +42,19 @@ const eventLogEntrySchema = z
   })
   .passthrough();
 
+const eventLogSchema = z.union([
+  z.array(eventLogEntrySchema),
+  z.string().transform((value, ctx) =>
+    parseJsonEncodedValue(value, ctx, "event log", z.array(eventLogEntrySchema)),
+  ),
+]);
+
 const tcbInfoSchema = z
   .object({
     app_compose: z.string().optional(),
     compose_hash: z.string().optional(),
     device_id: z.string().optional(),
-    event_log: z.array(eventLogEntrySchema).optional(),
+    event_log: eventLogSchema.optional(),
     mr_aggregated: z.string().optional(),
     mrtd: z.string().optional(),
     os_image_hash: z.string().optional(),
@@ -153,57 +181,36 @@ const intelSignedTcbInfoObjectSchema = z.object({
 const intelSignedQeIdentitySchema = z.union([
   intelSignedQeIdentityObjectSchema,
   z.string().transform((value, ctx) => {
-    try {
-      const parsed = JSON.parse(value);
-      return intelSignedQeIdentityObjectSchema.parse(parsed);
-    } catch (error) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message:
-          error instanceof Error
-            ? `The Intel QE identity could not be decoded as JSON: ${error.message}`
-            : "The Intel QE identity could not be decoded as JSON.",
-      });
-      return z.NEVER;
-    }
+    return parseJsonEncodedValue(
+      value,
+      ctx,
+      "Intel QE identity",
+      intelSignedQeIdentityObjectSchema,
+    );
   }),
 ]);
 
 const intelSignedTcbInfoSchema = z.union([
   intelSignedTcbInfoObjectSchema,
   z.string().transform((value, ctx) => {
-    try {
-      const parsed = JSON.parse(value);
-      return intelSignedTcbInfoObjectSchema.parse(parsed);
-    } catch (error) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message:
-          error instanceof Error
-            ? `The Intel TCB info could not be decoded as JSON: ${error.message}`
-            : "The Intel TCB info could not be decoded as JSON.",
-      });
-      return z.NEVER;
-    }
+    return parseJsonEncodedValue(
+      value,
+      ctx,
+      "Intel TCB info",
+      intelSignedTcbInfoObjectSchema,
+    );
   }),
 ]);
 
 const nvidiaPayloadSchema = z.union([
   nvidiaPayloadObjectSchema,
   z.string().transform((value, ctx) => {
-    try {
-      const parsed = JSON.parse(value);
-      return nvidiaPayloadObjectSchema.parse(parsed);
-    } catch (error) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message:
-          error instanceof Error
-            ? `The NVIDIA payload could not be decoded as JSON: ${error.message}`
-            : "The NVIDIA payload could not be decoded as JSON.",
-      });
-      return z.NEVER;
-    }
+    return parseJsonEncodedValue(
+      value,
+      ctx,
+      "NVIDIA payload",
+      nvidiaPayloadObjectSchema,
+    );
   }),
 ]);
 
@@ -222,7 +229,7 @@ export const REQUIRED_TOP_LEVEL_FIELDS = [
 
 export const normalizedAttestationReportSchema = z
   .object({
-    event_log: z.array(eventLogEntrySchema),
+    event_log: eventLogSchema,
     info: infoSchema,
     intel_quote: z.string(),
     model: z.string().optional(),
