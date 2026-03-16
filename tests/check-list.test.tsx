@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import CheckList from "../src/components/CheckList";
 import type { CheckResult } from "../src/lib/check-result";
@@ -98,6 +98,26 @@ describe("CheckList", () => {
     expect(screen.getByText("Cryptographic")).toBeTruthy();
     expect(screen.getByText("Local check")).toBeTruthy();
   });
+
+  it("renders advisory failures with warning styling instead of blocking-failure styling", () => {
+    renderChecklist();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: /Check app certificate bundle root pin/ }),
+    );
+
+    const dialog = screen.getByRole("dialog", {
+      name: /Check app certificate bundle root pin details/,
+    });
+
+    expect(dialog.querySelector(".check-status-pill")?.textContent).toBe("Advisory");
+    expect(
+      screen
+        .getByRole("button", { name: /Check app certificate bundle root pin/ })
+        .closest("li")
+        ?.className,
+    ).toContain("check-warning");
+  });
 });
 
 function renderChecklist() {
@@ -140,6 +160,18 @@ function buildChecks(): CheckResult[] {
       status: "pass",
     },
     {
+      authority: "cryptographic",
+      description:
+        "The app certificate bundle does not terminate at the pinned app trust anchor.",
+      domain: "app-cert",
+      id: "app-root-pin",
+      jsonPath: "$.info.app_cert",
+      label: "Check app certificate bundle root pin",
+      severity: "advisory",
+      source: "local",
+      status: "fail",
+    },
+    {
       authority: "provenance",
       description:
         "The embedded verifier does not provide a matching signing address binding.",
@@ -177,14 +209,14 @@ function buildVerification(): VerificationSummary {
       intel: "verified",
       nvidia: "verified",
     },
-    failedChecks: 0,
+    failedChecks: 1,
     headline: "Attestation verified",
     infoChecks: 1,
     intelRevocationCoverage: "not-run",
     mode: "offline",
     passedChecks: 1,
     status: "verified",
-    supportedChecks: 1,
+    supportedChecks: 2,
   };
 }
 

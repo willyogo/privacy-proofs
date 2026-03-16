@@ -476,6 +476,11 @@
   background: linear-gradient(180deg, rgba(98, 29, 40, 0.3), rgba(18, 12, 13, 0.28));
 }
 
+.check-warning .check-tile-button {
+  border-color: rgba(216, 181, 122, 0.44);
+  background: linear-gradient(180deg, rgba(110, 76, 18, 0.3), rgba(24, 18, 10, 0.28));
+}
+
 .check-info .check-tile-button {
   border-color: rgba(216, 181, 122, 0.38);
   background: linear-gradient(180deg, rgba(98, 69, 20, 0.26), rgba(18, 14, 9, 0.28));
@@ -514,6 +519,12 @@
 .check-glyph-fail {
   background: rgba(243, 161, 164, 0.9);
   color: #381417;
+}
+
+.check-glyph-warning {
+  background: rgba(216, 181, 122, 0.92);
+  color: #34250c;
+  box-shadow: 0 8px 22px rgba(151, 109, 33, 0.22);
 }
 
 .check-glyph-info {
@@ -555,6 +566,12 @@
   color: #ffd7db;
   border-color: rgba(243, 161, 164, 0.36);
   background: rgba(156, 52, 68, 0.22);
+}
+
+.check-status-warning {
+  color: #ffe4b6;
+  border-color: rgba(216, 181, 122, 0.34);
+  background: rgba(151, 109, 33, 0.2);
 }
 
 .check-status-info {

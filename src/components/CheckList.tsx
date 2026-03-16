@@ -100,11 +100,12 @@ export default function CheckList({
             const isOpen = openCheckKey === checkKey;
             const popoverId = `${listId}-${index}`;
             const rawValue = describeResolvedValue(report, check.jsonPath);
+            const checkTone = toneForCheck(check);
 
             return (
               <li
                 key={checkKey}
-                className={`check-tile check-${check.status}${isOpen ? " check-tile-open" : ""}`}
+                className={`check-tile check-${checkTone}${isOpen ? " check-tile-open" : ""}`}
                 ref={(element) => {
                   if (element) {
                     tileRefs.current.set(checkKey, element);
@@ -118,7 +119,7 @@ export default function CheckList({
                   aria-controls={popoverId}
                   aria-expanded={isOpen}
                   aria-haspopup="dialog"
-                  aria-label={`${statusLabel(check.status)}. ${check.label}. ${check.description}`}
+                  aria-label={`${statusLabel(check)}. ${check.label}. ${check.description}`}
                   className="check-tile-button"
                   onClick={() => {
                     setOpenCheckKey((current) => current === checkKey ? null : checkKey);
@@ -128,9 +129,9 @@ export default function CheckList({
                   <span className="check-tile-main">
                     <span
                       aria-hidden="true"
-                      className={`check-glyph check-glyph-${check.status}`}
+                      className={`check-glyph check-glyph-${checkTone}`}
                     >
-                      {statusGlyph(check.status)}
+                      {statusGlyph(check)}
                     </span>
                     <span className="check-copy">
                       <span className="check-title">{check.label}</span>
@@ -153,8 +154,8 @@ export default function CheckList({
                           {check.description}
                         </p>
                       </div>
-                      <span className={`check-status-pill check-status-${check.status}`}>
-                        {statusLabel(check.status)}
+                      <span className={`check-status-pill check-status-${checkTone}`}>
+                        {statusLabel(check)}
                       </span>
                     </div>
 
@@ -408,28 +409,40 @@ function capitalize(value: string): string {
   return value.charAt(0).toUpperCase() + value.slice(1);
 }
 
-function statusLabel(status: CheckResult["status"]) {
-  if (status === "pass") {
+function statusLabel(check: CheckResult) {
+  if (check.status === "fail" && check.severity === "advisory") {
+    return "Advisory";
+  }
+
+  if (check.status === "pass") {
     return "Passed";
   }
 
-  if (status === "fail") {
+  if (check.status === "fail") {
     return "Failed";
   }
 
   return "Info";
 }
 
-function statusGlyph(status: CheckResult["status"]) {
-  if (status === "pass") {
+function statusGlyph(check: CheckResult) {
+  if (check.status === "pass") {
     return "✓";
   }
 
-  if (status === "fail") {
+  if (check.status === "fail") {
     return "!";
   }
 
   return "i";
+}
+
+function toneForCheck(check: CheckResult): "pass" | "warning" | "fail" | "info" {
+  if (check.status === "fail" && check.severity === "advisory") {
+    return "warning";
+  }
+
+  return check.status;
 }
 
 async function copyText(value: string) {
