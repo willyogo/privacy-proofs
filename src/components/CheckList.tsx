@@ -163,6 +163,9 @@ export default function CheckList({
                         {sourceLabel(check.source)}
                       </span>
                       <span className="check-popover-chip">
+                        {authorityLabel(check.authority)}
+                      </span>
+                      <span className="check-popover-chip">
                         {domainLabel(check.domain)}
                       </span>
                       <span className="check-popover-chip">
@@ -383,6 +386,22 @@ function sourceLabel(source: CheckResult["source"]): string {
   }
 
   return "Local check";
+}
+
+function authorityLabel(authority: CheckResult["authority"]): string {
+  if (authority === "cryptographic") {
+    return "Cryptographic";
+  }
+
+  if (authority === "consistency") {
+    return "Consistency only";
+  }
+
+  if (authority === "vendor") {
+    return "Vendor backed";
+  }
+
+  return "Embedded provenance";
 }
 
 function capitalize(value: string): string {

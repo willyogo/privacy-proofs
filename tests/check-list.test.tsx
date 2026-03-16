@@ -87,6 +87,17 @@ describe("CheckList", () => {
       screen.getByRole("dialog", { name: /Verify signing public key binding details/ }),
     ).toBeTruthy();
   });
+
+  it("shows authority chips for each check", () => {
+    renderChecklist();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: /Verify signing public key binding/ }),
+    );
+
+    expect(screen.getByText("Cryptographic")).toBeTruthy();
+    expect(screen.getByText("Local check")).toBeTruthy();
+  });
 });
 
 function renderChecklist() {
@@ -106,6 +117,7 @@ function renderChecklist() {
 function buildChecks(): CheckResult[] {
   return [
     {
+      authority: "cryptographic",
       description: "The signing public key derives to the reported Ethereum address.",
       details: [
         {
@@ -128,6 +140,7 @@ function buildChecks(): CheckResult[] {
       status: "pass",
     },
     {
+      authority: "provenance",
       description:
         "The embedded verifier does not provide a matching signing address binding.",
       details: [
@@ -156,6 +169,7 @@ function buildChecks(): CheckResult[] {
 function buildVerification(): VerificationSummary {
   return {
     badge: "Verified",
+    consistencyFailures: 0,
     cryptographicStatus: "verified",
     description: "fixture result",
     engineLabel: "Engine active",
@@ -166,6 +180,7 @@ function buildVerification(): VerificationSummary {
     failedChecks: 0,
     headline: "Attestation verified",
     infoChecks: 1,
+    intelRevocationCoverage: "not-run",
     mode: "offline",
     passedChecks: 1,
     status: "verified",

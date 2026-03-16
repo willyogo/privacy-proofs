@@ -4,6 +4,12 @@ export type CheckSource = "local" | "online" | "embedded";
 
 export type CheckSeverity = "blocking" | "advisory";
 
+export type CheckAuthority =
+  | "cryptographic"
+  | "consistency"
+  | "vendor"
+  | "provenance";
+
 export type EvidenceDomain =
   | "input"
   | "binding"
@@ -20,6 +26,7 @@ export type CheckDetail = {
 };
 
 export type CheckResult = {
+  authority: CheckAuthority;
   description: string;
   details?: CheckDetail[];
   domain: EvidenceDomain;

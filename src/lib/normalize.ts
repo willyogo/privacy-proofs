@@ -1,4 +1,4 @@
-import type { CheckResult } from "./check-result";
+import type { CheckAuthority, CheckResult } from "./check-result";
 import { parseAttestationReport } from "./schema";
 import type {
   ParseReportOptions,
@@ -13,6 +13,7 @@ export function createIdleParseResult(): ParseResult {
     checks: [],
     verification: {
       badge: "Awaiting input",
+      consistencyFailures: 0,
       cryptographicStatus: "unsupported",
       description:
         "Paste or upload an attestation report, then run the local verifier or complete live vendor verification.",
@@ -24,6 +25,7 @@ export function createIdleParseResult(): ParseResult {
       failedChecks: 0,
       headline: "Ready to Verify",
       infoChecks: 0,
+      intelRevocationCoverage: "not-run",
       mode: "offline",
       passedChecks: 0,
       status: "idle",
@@ -130,6 +132,7 @@ export async function parseReportSource(
     checks,
     cryptographicStatus: verificationAnalysis.cryptographicStatus,
     evidenceStatus: verificationAnalysis.evidenceStatus,
+    intelRevocationCoverage: verificationAnalysis.intelRevocationCoverage,
     mode: verificationAnalysis.mode,
     verifiedAt: verificationAnalysis.verifiedAt,
   });
@@ -200,12 +203,14 @@ function buildVerificationSummary({
   checks,
   cryptographicStatus,
   evidenceStatus,
+  intelRevocationCoverage,
   mode,
   verifiedAt,
 }: {
   checks: CheckResult[];
   cryptographicStatus: VerificationSummary["cryptographicStatus"];
   evidenceStatus: VerificationSummary["evidenceStatus"];
+  intelRevocationCoverage: VerificationSummary["intelRevocationCoverage"];
   mode: VerificationSummary["mode"];
   verifiedAt?: string;
 }): VerificationSummary {
@@ -214,8 +219,14 @@ function buildVerificationSummary({
   const passedChecks = summaryChecks.filter((check) => check.status === "pass").length;
   const failedChecks = summaryChecks.filter((check) => check.status === "fail").length;
   const infoChecks = summaryChecks.filter((check) => check.status === "info").length;
+  const consistencyFailures = checks.filter(
+    (check) => check.authority === "consistency" && check.status === "fail",
+  ).length;
   const blockingFailures = checks.filter(
-    (check) => check.severity === "blocking" && check.status === "fail",
+    (check) =>
+      check.authority === "cryptographic" &&
+      check.severity === "blocking" &&
+      check.status === "fail",
   );
 
   if (supportedChecks === 0) {
@@ -225,16 +236,18 @@ function buildVerificationSummary({
   if (blockingFailures.length > 0) {
     return {
       badge: "Verification failed",
+      consistencyFailures,
       cryptographicStatus,
       description:
         mode === "online"
-          ? "A blocking local or vendor-backed check failed. Do not treat this report as verified."
-          : "A blocking local check failed. Do not treat this report as verified.",
+          ? "A blocking local cryptographic check failed before the report could reach vendor-backed confirmation."
+          : "A blocking local cryptographic check failed. Do not treat this report as validated.",
       evidenceStatus,
       engineLabel: mode === "online" ? "Online completion" : "Local engine",
       failedChecks,
       headline: "Verification failed",
       infoChecks,
+      intelRevocationCoverage,
       mode,
       passedChecks,
       status: "invalid",
@@ -243,19 +256,21 @@ function buildVerificationSummary({
     };
   }
 
-  if (cryptographicStatus === "verified") {
+  if (cryptographicStatus === "verified" && consistencyFailures === 0) {
     return {
-      badge: mode === "online" ? "Fully verified" : "Locally verified",
+      badge: mode === "online" ? "Fully verified" : "Locally validated",
+      consistencyFailures,
       cryptographicStatus,
       description:
         mode === "online"
-          ? "All local checks passed, Intel collateral was re-fetched from Intel PCS, and NVIDIA evidence was confirmed with live NRAS verification."
-          : "All supported local evidence checks passed. Run online completion to reach the vendor-backed full verification path.",
+          ? "All supported local checks passed, Intel collateral was re-fetched from Intel PCS, and NVIDIA evidence was confirmed with live NRAS verification."
+          : "All supported local cryptographic checks passed. Local consistency checks found no contradictions, but vendor-backed confirmation still requires online completion.",
       evidenceStatus,
       engineLabel: mode === "online" ? "Online completion" : "Local engine",
       failedChecks,
-      headline: mode === "online" ? "Full verification complete" : "Local verification complete",
+      headline: mode === "online" ? "Full verification complete" : "Local validation complete",
       infoChecks,
+      intelRevocationCoverage,
       mode,
       passedChecks,
       status: "verified",
@@ -266,16 +281,22 @@ function buildVerificationSummary({
 
   return {
     badge: "Partially verified",
+    consistencyFailures,
     cryptographicStatus,
     description:
       mode === "online"
-        ? "Blocking checks passed, but one or more vendor-backed completion steps were unavailable or incomplete, so the report did not reach a fully verified result."
-        : "Blocking local checks passed, but one or more evidence paths remained incomplete, unsupported, or collateral-limited, so the app did not reach a full verification result.",
+        ? consistencyFailures > 0
+          ? "Supported local cryptographic checks passed, but one or more consistency checks failed, so online completion did not produce a clean fully verified result."
+          : "Supported local cryptographic checks passed, but one or more vendor-backed completion steps were unavailable, incomplete, or unconfirmed."
+        : consistencyFailures > 0
+          ? "Supported local cryptographic checks passed, but one or more unauthenticated consistency checks disagreed with other report fields."
+          : "Supported local cryptographic checks passed, but one or more evidence paths remained incomplete, unsupported, or collateral-limited.",
     evidenceStatus,
     engineLabel: mode === "online" ? "Online completion" : "Local engine",
     failedChecks,
     headline: mode === "online" ? "Online verification incomplete" : "Partial verification",
     infoChecks,
+    intelRevocationCoverage,
     mode,
     passedChecks,
     status: "partially-verified",
@@ -330,11 +351,31 @@ function buildImmediateErrorResult({
         intel: "unsupported",
         nvidia: "unsupported",
       },
+      intelRevocationCoverage: "not-run",
       mode: "offline",
     }),
   };
 }
 
-function buildCheck(check: CheckResult): CheckResult {
-  return check;
+type BuildCheckInput = Omit<CheckResult, "authority"> & {
+  authority?: CheckAuthority;
+};
+
+function buildCheck(check: BuildCheckInput): CheckResult {
+  return {
+    ...check,
+    authority: check.authority ?? inferAuthority(check.source),
+  };
+}
+
+function inferAuthority(source: CheckResult["source"]): CheckAuthority {
+  if (source === "online") {
+    return "vendor";
+  }
+
+  if (source === "embedded") {
+    return "provenance";
+  }
+
+  return "cryptographic";
 }

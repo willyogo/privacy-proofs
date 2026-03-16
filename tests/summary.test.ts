@@ -149,6 +149,7 @@ describe("verdict construction", () => {
     mocks.verifyNvidiaEvidenceSignature.mockResolvedValue(true);
     mocks.completeIntelOnlineVerification.mockResolvedValue({
       checks: [],
+      revocationCoverage: "complete",
       status: "verified",
     });
     mocks.completeNvidiaOnlineVerification.mockResolvedValue({
@@ -170,6 +171,7 @@ describe("verdict construction", () => {
         ],
         checks: [
           {
+            authority: "cryptographic",
             description: `${bundleLabel} check`,
             domain: domain === "app" ? "app-cert" : domain === "intel" ? "tdx" : "nvidia",
             id: `${domain}-root-pin`,
@@ -234,10 +236,44 @@ describe("verdict construction", () => {
       "fixture.json",
     );
 
-    expect(result.verification.status).toBe("invalid");
+    expect(result.verification.status).toBe("partially-verified");
     expect(
       result.checks.find((check) => check.id === "event-log-compose-hash")?.status,
     ).toBe("fail");
+    expect(
+      result.checks.find((check) => check.id === "event-log-compose-hash")?.authority,
+    ).toBe("consistency");
+  });
+
+  it("downgrades duplicated top-level versus TCB event-log mismatches to partial", async () => {
+    const baseReport = buildReport();
+    const mismatchedTcbEventLog = baseReport.event_log.map((entry: Record<string, unknown>) => {
+      if (entry.event !== "compose-hash") {
+        return entry;
+      }
+
+      return {
+        ...entry,
+        event_payload: "55".repeat(32),
+      };
+    });
+
+    const result = await parseReportSource(
+      JSON.stringify(
+        buildReport({
+          tcbEventLog: mismatchedTcbEventLog,
+        }),
+      ),
+      "fixture.json",
+    );
+
+    expect(result.verification.status).toBe("partially-verified");
+    expect(result.checks.find((check) => check.id === "event-log-duplication")?.status).toBe(
+      "fail",
+    );
+    expect(result.checks.find((check) => check.id === "event-log-duplication")?.authority).toBe(
+      "consistency",
+    );
   });
 
   it("keeps NVIDIA arch mismatches advisory-only", async () => {
@@ -271,7 +307,7 @@ describe("verdict construction", () => {
 
     expect(result.verification.status).toBe("verified");
     expect(result.verification.evidenceStatus.intel).toBe("verified");
-    expect(result.verification.badge).toBe("Locally verified");
+    expect(result.verification.badge).toBe("Locally validated");
   });
 
   it("reaches fully verified when online Intel and NVIDIA completion both succeed", async () => {
@@ -297,6 +333,7 @@ describe("verdict construction", () => {
     mocks.completeNvidiaOnlineVerification.mockResolvedValue({
       checks: [
         {
+          authority: "vendor",
           description: "NRAS authentication was unavailable.",
           domain: "nvidia",
           id: "nvidia-online-auth",
@@ -326,6 +363,43 @@ describe("verdict construction", () => {
     expect(
       result.checks.find((check) => check.id === "nvidia-online-auth")?.source,
     ).toBe("online");
+  });
+
+  it("surfaces limited Intel revocation coverage without blocking full verification", async () => {
+    mocks.completeIntelOnlineVerification.mockResolvedValue({
+      checks: [
+        {
+          authority: "vendor",
+          description:
+            "Intel signing-chain revocation coverage is limited because one or more issuer certificates lacked usable CRL coverage.",
+          details: [],
+          domain: "tdx",
+          id: "intel-online-signing-revocation-coverage",
+          jsonPath: "$.intel_quote",
+          label: "Assess Intel signing-chain revocation coverage",
+          severity: "advisory",
+          source: "online",
+          status: "info",
+        },
+      ],
+      revocationCoverage: "limited",
+      status: "verified",
+    });
+
+    const result = await parseReportSource(JSON.stringify(buildReport()), "fixture.json", {
+      mode: "online",
+      online: {
+        nvidiaApiKey: "fixture-api-key",
+      },
+    });
+
+    expect(result.verification.status).toBe("verified");
+    expect(result.verification.badge).toBe("Fully verified");
+    expect(result.verification.intelRevocationCoverage).toBe("limited");
+    expect(
+      result.checks.find((check) => check.id === "intel-online-signing-revocation-coverage")
+        ?.status,
+    ).toBe("info");
   });
 
   it("excludes embedded provenance passes from the headline check count", async () => {
@@ -366,6 +440,7 @@ function buildReport({
   intelTcbSignChain,
   payloadArch = entryArch,
   serverVerification,
+  tcbEventLog,
 }: {
   appCert?: string;
   duplicateEvents?: Array<{ event: string; event_payload: string }>;
@@ -375,6 +450,7 @@ function buildReport({
   intelTcbSignChain?: string;
   payloadArch?: string;
   serverVerification?: Record<string, unknown>;
+  tcbEventLog?: unknown[];
 } = {}) {
   const composeHash =
     "39eaa3f466bb30f10e9d2be1b103b2d97d452f4d3dd15fcc9c6fb1f1023bfdba";
@@ -435,7 +511,7 @@ function buildReport({
       instance_id: "d91376e26c0be974730f66ca0cc9dadb2f0e3a85",
       key_provider_info: KEY_PROVIDER_INFO,
       tcb_info: {
-        event_log: eventLog,
+        event_log: tcbEventLog ?? eventLog,
         mrtd: "00".repeat(48),
         os_image_hash: "9b69bb1698bacbb6985409a2c272bcb892e09cdcea63d5399c6768b67d3ff677",
         rtmr0: rtmrs.rtmr0,

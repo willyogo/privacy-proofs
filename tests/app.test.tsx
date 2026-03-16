@@ -30,12 +30,18 @@ describe("App", () => {
       },
       verification: {
         badge: "Partially verified",
+        consistencyFailures: 0,
         cryptographicStatus: "partial",
         description: "fixture result",
         engineLabel: "Engine active",
+        evidenceStatus: {
+          intel: "partial",
+          nvidia: "partial",
+        },
         failedChecks: 0,
         headline: "Partial verification",
         infoChecks: 0,
+        intelRevocationCoverage: "not-run",
         mode: "offline",
         passedChecks: 1,
         status: "partially-verified",

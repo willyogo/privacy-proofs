@@ -43,9 +43,7 @@ export default function App() {
               intelBaseUrl:
                 sanitizeEnvValue(runtimeEnv?.VITE_INTEL_PCS_BASE_URL) ??
                 INTEL_PROXY_ROUTE,
-              nvidiaApiKey:
-                sanitizeEnvValue(nvidiaApiKey) ??
-                sanitizeEnvValue(runtimeEnv?.VITE_NVIDIA_NRAS_API_KEY),
+              nvidiaApiKey: sanitizeEnvValue(nvidiaApiKey),
               nvidiaBaseUrl:
                 sanitizeEnvValue(runtimeEnv?.VITE_NVIDIA_NRAS_BASE_URL) ??
                 NVIDIA_PROXY_BASE_ROUTE,

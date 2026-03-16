@@ -188,6 +188,7 @@ export type NormalizationError = {
 
 export type VerificationSummary = {
   badge: string;
+  consistencyFailures: number;
   cryptographicStatus: CryptographicVerificationStatus;
   description: string;
   evidenceStatus: {
@@ -198,6 +199,7 @@ export type VerificationSummary = {
   failedChecks: number;
   headline: string;
   infoChecks: number;
+  intelRevocationCoverage: "not-run" | "complete" | "limited";
   mode: VerificationMode;
   passedChecks: number;
   status: VerificationStatus;

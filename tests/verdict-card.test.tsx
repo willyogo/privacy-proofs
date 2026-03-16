@@ -36,9 +36,28 @@ describe("VerdictCard", () => {
 
     expect(screen.getByText("Unavailable")).toBeTruthy();
   });
+
+  it("renders human-readable local-check and revocation labels", () => {
+    render(
+      <VerdictCard
+        fileName="fixture.json"
+        result={buildResult("2026-03-12T01:02:03Z", {
+          consistencyFailures: 1,
+          intelRevocationCoverage: "limited",
+        })}
+      />,
+    );
+
+    expect(screen.getByText("All supported local cryptographic checks passed")).toBeTruthy();
+    expect(screen.getByText("1 failed consistency check")).toBeTruthy();
+    expect(screen.getByText("Limited coverage")).toBeTruthy();
+  });
 });
 
-function buildResult(verifiedAt?: string): ParseResult {
+function buildResult(
+  verifiedAt?: string,
+  overrides?: Partial<ParseResult["verification"]>,
+): ParseResult {
   return {
     checks: [],
     state: "loaded",
@@ -52,6 +71,7 @@ function buildResult(verifiedAt?: string): ParseResult {
     },
     verification: {
       badge: "Verified",
+      consistencyFailures: 0,
       cryptographicStatus: "verified",
       description: "fixture result",
       engineLabel: "Engine active",
@@ -62,10 +82,12 @@ function buildResult(verifiedAt?: string): ParseResult {
       failedChecks: 0,
       headline: "Attestation verified",
       infoChecks: 0,
+      intelRevocationCoverage: "not-run",
       mode: "offline",
       passedChecks: 2,
       status: "verified",
       supportedChecks: 2,
+      ...overrides,
     },
   };
 }
