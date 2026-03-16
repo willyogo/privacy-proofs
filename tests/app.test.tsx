@@ -1,5 +1,6 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { ParseResult } from "../src/lib/types";
 
 const parseReportSource = vi.fn();
 
@@ -17,31 +18,7 @@ vi.mock("../src/lib/normalize", async () => {
 describe("App", () => {
   beforeEach(() => {
     parseReportSource.mockReset();
-    parseReportSource.mockResolvedValue({
-      checks: [],
-      state: "loaded",
-      summary: {
-        eventNames: [],
-        model: "fixture-model",
-        preview: {},
-        teeHardware: "TDX",
-        topLevelKeys: ["report"],
-        verifiedAt: "2026-03-12T01:02:03Z",
-      },
-      verification: {
-        badge: "Partially verified",
-        cryptographicStatus: "partial",
-        description: "fixture result",
-        engineLabel: "Engine active",
-        failedChecks: 0,
-        headline: "Partial verification",
-        infoChecks: 0,
-        mode: "offline",
-        passedChecks: 1,
-        status: "partially-verified",
-        supportedChecks: 1,
-      },
-    });
+    parseReportSource.mockResolvedValue(buildResult());
   });
 
   it("does not verify on every keystroke and runs verification on button click", async () => {
@@ -108,23 +85,16 @@ describe("App", () => {
 
   it("passes online options when full verification is requested", async () => {
     const { default: App } = await import("../src/app");
+    parseReportSource
+      .mockResolvedValueOnce(buildUnauthorizedResult())
+      .mockResolvedValueOnce(buildResult());
     render(<App />);
 
-    const nvidiaApiKeyLink = screen.getByRole("link", { name: "NVIDIA API key" });
-    expect(nvidiaApiKeyLink.getAttribute("href")).toBe("https://build.nvidia.com/");
-    expect(nvidiaApiKeyLink.getAttribute("target")).toBe("_blank");
+    expect(screen.queryByRole("link", { name: "NVIDIA API key" })).toBeNull();
 
     fireEvent.change(screen.getByLabelText("Raw attestation JSON"), {
       target: { value: '{"report":true}' },
     });
-    fireEvent.change(
-      screen.getByLabelText(
-        "NVIDIA API key (optional for local verification, required for live vendor verification)",
-      ),
-      {
-        target: { value: "fixture-api-key" },
-      },
-    );
 
     fireEvent.click(
       screen.getByRole("button", { name: "Complete full verification" }),
@@ -135,6 +105,35 @@ describe("App", () => {
       mode: "online",
       online: {
         intelBaseUrl: "/intel-proxy",
+        nvidiaApiKey: undefined,
+        nvidiaBaseUrl: "/nvidia",
+        nvidiaJwksUrl: "/nvidia/jwks",
+      },
+    });
+
+    const nvidiaApiKeyLink = await screen.findByRole("link", {
+      name: "NVIDIA API key",
+    });
+    expect(nvidiaApiKeyLink.getAttribute("href")).toBe("https://build.nvidia.com/");
+    expect(nvidiaApiKeyLink.getAttribute("target")).toBe("_blank");
+
+    fireEvent.change(
+      screen.getByLabelText(
+        "NVIDIA API key (shown because NRAS rejected the unauthenticated request)",
+      ),
+      {
+        target: { value: "fixture-api-key" },
+      },
+    );
+    fireEvent.click(
+      screen.getByRole("button", { name: "Complete full verification" }),
+    );
+
+    await waitFor(() => expect(parseReportSource).toHaveBeenCalledTimes(2));
+    expect(parseReportSource).toHaveBeenLastCalledWith('{"report":true}', undefined, {
+      mode: "online",
+      online: {
+        intelBaseUrl: "/intel-proxy",
         nvidiaApiKey: "fixture-api-key",
         nvidiaBaseUrl: "/nvidia",
         nvidiaJwksUrl: "/nvidia/jwks",
@@ -142,3 +141,59 @@ describe("App", () => {
     });
   });
 });
+
+function buildResult(checks: ParseResult["checks"] = []): ParseResult {
+  return {
+    checks,
+    state: "loaded",
+    summary: {
+      eventNames: [],
+      model: "fixture-model",
+      preview: {},
+      teeHardware: "TDX",
+      topLevelKeys: ["report"],
+      verifiedAt: "2026-03-12T01:02:03Z",
+    },
+    verification: {
+      badge: "Partially verified",
+      consistencyFailures: 0,
+      cryptographicStatus: "partial",
+      description: "fixture result",
+      engineLabel: "Engine active",
+      evidenceStatus: {
+        intel: "partial",
+        nvidia: "partial",
+      },
+      failedChecks: 0,
+      headline: "Partial verification",
+      infoChecks: 0,
+      intelRevocationCoverage: "not-run",
+      mode: "offline",
+      passedChecks: 1,
+      status: "partially-verified",
+      supportedChecks: 1,
+    },
+  };
+}
+
+function buildUnauthorizedResult(): ParseResult {
+  return buildResult([
+    {
+      authority: "vendor",
+      description: "The NVIDIA NRAS request failed with HTTP 401.",
+      details: [
+        {
+          label: "HTTP status",
+          value: "401",
+        },
+      ],
+      domain: "nvidia",
+      id: "nvidia-online-attest-fetch",
+      jsonPath: "$.nvidia_payload",
+      label: "Submit NVIDIA evidence to NRAS",
+      severity: "advisory",
+      source: "online",
+      status: "fail",
+    },
+  ]);
+}

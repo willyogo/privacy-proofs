@@ -171,6 +171,83 @@ describe("parseReportSource", () => {
     ).toBe("fail");
   });
 
+  it("treats relabeled event payload matches as consistency-only evidence", async () => {
+    const baseReport = buildBaseReport();
+    const relabeledComposeHash = "aa".repeat(32);
+    const eventLog = baseReport.event_log.map((entry) => {
+      if (entry.event !== "compose-hash") {
+        return entry;
+      }
+
+      return {
+        ...entry,
+        event_payload: relabeledComposeHash,
+      };
+    });
+
+    const result = await parseReportSource(
+      JSON.stringify({
+        ...baseReport,
+        event_log: eventLog,
+        info: {
+          ...baseReport.info,
+          compose_hash: relabeledComposeHash,
+          tcb_info: {
+            ...baseReport.info.tcb_info,
+            event_log: eventLog,
+          },
+        },
+      }),
+      "relabeled-event-log.json",
+    );
+
+    const composeHashCheck = result.checks.find((check) => check.id === "event-log-compose-hash");
+
+    expect(composeHashCheck?.status).toBe("pass");
+    expect(composeHashCheck?.authority).toBe("consistency");
+    expect(composeHashCheck?.description).toContain("local consistency check");
+  });
+
+  it("flags malformed duplicate security-critical event payloads as conflicts", async () => {
+    const baseReport = buildBaseReport();
+    const duplicateEntry = withSyntheticDigests([
+      {
+        event: "compose-hash",
+        event_payload: "not-hex",
+        event_type: 134217729,
+        imr: 3,
+      },
+    ])[0]!;
+    const eventLog = [...baseReport.event_log, duplicateEntry];
+    const rtmrs = replaySyntheticRtmrs(eventLog);
+
+    const result = await parseReportSource(
+      JSON.stringify({
+        ...baseReport,
+        event_log: eventLog,
+        info: {
+          ...baseReport.info,
+          tcb_info: {
+            ...baseReport.info.tcb_info,
+            event_log: eventLog,
+            rtmr0: rtmrs.rtmr0,
+            rtmr1: rtmrs.rtmr1,
+            rtmr2: rtmrs.rtmr2,
+            rtmr3: rtmrs.rtmr3,
+          },
+        },
+        intel_quote: buildQuoteHex({ rtmrs, version: 4 }),
+      }),
+      "malformed-duplicate-event.json",
+    );
+
+    const composeHashCheck = result.checks.find((check) => check.id === "event-log-compose-hash");
+
+    expect(composeHashCheck?.status).toBe("fail");
+    expect(composeHashCheck?.authority).toBe("consistency");
+    expect(composeHashCheck?.description).toContain("conflicting or malformed payloads");
+  });
+
   it("uses the local verifier time rather than embedded verifiedAt in offline summaries", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-03-13T17:45:00.000Z"));

@@ -8,7 +8,7 @@ You can paste raw JSON or upload a report file, and the app will:
 - validate local bindings, certificate chains, Intel TDX quote cryptography, and NVIDIA raw evidence in the browser
 - optionally complete live vendor verification using Intel PCS and NVIDIA NRAS with only the Venice report as input
 - treat embedded `verified`, `server_verification`, and `verifiedAt` fields as advisory provenance only, never as primary verifier output
-- show a verdict of `Fully verified`, `Locally verified`, `Partially verified`, or `Verification failed`
+- show a verdict of `Fully verified`, `Locally validated`, `Partially verified`, or `Verification failed`
 
 ## Purpose
 
@@ -43,10 +43,11 @@ The app is a Vite + React + TypeScript single-page application.
    - QE report-data binding between the attestation key and QE auth data
    - report-data binding between signing address and nonce
    - TDX measurement checks (`MRTD`, `RTMR0-3`, `MRCONFIGID`)
-   - event log RTMR replay plus consistency checks against the `info` / `tcb_info` block, including duplicate-value ambiguity failures for security-critical events
+   - event log RTMR replay plus consistency checks against the `info` / `tcb_info` block, with payload-field matches treated as unauthenticated consistency evidence because Venice does not define a canonical payload-to-digest mapping
    - key-provider metadata consistency checks
    - NVIDIA certificate-chain validation against a pinned trust store
-   - NVIDIA raw-evidence parsing, signature verification, nonce binding, FWID binding, and opaque-data checks
+   - NVIDIA raw-evidence parsing, signature verification, nonce binding, FWID binding, and opaque-data checks, with local success scoped to raw-evidence integrity/binding rather than vendor-backed GPU measurement acceptance
+   - an explicit advisory note that the raw Venice report exposes only shared-nonce Intel/NVIDIA cross-domain linkage
    - advisory inspection of embedded Venice or NRAS provenance already present in the raw report
 7. If the user chose online completion, the verifier also:
    - derives Intel PCS lookup values from the embedded PCK chain
@@ -55,13 +56,13 @@ The app is a Vite + React + TypeScript single-page application.
    - submits the Venice-provided `nvidia_payload` to NVIDIA NRAS and verifies the signed NRAS response using NVIDIA JWKS
 8. `buildVerificationSummary(...)` classifies the result:
    - `Fully verified`: blocking local checks passed and the live Intel + NVIDIA completion paths both succeeded
-   - `Locally verified`: blocking local checks passed and every supported local evidence path succeeded, but live completion was not requested
-   - `Partially verified`: all blocking checks passed, but at least one evidence path remained incomplete, unsupported, advisory-only, or online-incomplete
-   - `Verification failed`: one or more blocking local checks failed
+   - `Locally validated`: all supported local cryptographic checks passed and no local consistency checks failed, but live vendor completion was not requested
+   - `Partially verified`: blocking local cryptographic checks passed, but at least one consistency-only check failed or a vendor-backed / unsupported path remained incomplete
+   - `Verification failed`: one or more blocking local cryptographic checks failed
 9. React components render:
    - a verdict summary card
    - a decoded metadata panel
-   - a checklist of individual checks including source, domain, and severity
+   - a checklist of individual checks including source, authority, domain, and severity
 
 ## Current Scope and Limits
 
@@ -70,13 +71,15 @@ This repository now performs a materially stronger local verification pass than 
 The main remaining limits are:
 
 - online completion requires outbound network access
-- NVIDIA NRAS may require deployment-provided authentication or a user-supplied API key
+- NVIDIA NRAS may require a user-supplied API key in the browser after an unauthorized anonymous attempt
 - separate Venice response-signature metadata is still out of scope for this verifier
+- the raw Venice format does not provide a stronger Intel/NVIDIA cryptographic linkage than the shared nonce
+- Intel signing-chain revocation coverage depends on the CRL URLs exposed by fetched Intel collateral; limited coverage is surfaced separately and does not by itself block `Fully verified`
 
 That means a positive result in this app should currently be read as:
 
-- `Locally verified` means blocking local bindings, schema checks, and supported certificate/signature checks passed, and
-- `Fully verified` means the app also re-fetched Intel collateral live and completed NVIDIA verification with live NRAS, and
+- `Locally validated` means supported local cryptographic checks passed and local consistency checks found no contradictions, and
+- `Fully verified` means the app also re-fetched Intel collateral live and completed NVIDIA verification with live NRAS, with Intel revocation-coverage limits shown separately when collateral does not expose full CRL coverage, and
 - advisory-only metadata such as `info.app_cert` or embedded `server_verification` never upgrades a report into `Verified` or supplies the primary verification timestamp
 
 It should be read as proof only for the evidence paths the app independently re-derived from the supplied raw report bytes plus live vendor collateral/services.
@@ -124,8 +127,8 @@ npm test
 Notes:
 
 - The test suite is repo-local and does not depend on a machine-specific report path.
-- Current tests cover schema failures, verdict construction, unsupported quote versions, explicit verify UI flow, raw-report-only verification behavior, certificate-anchor negatives, duplicate event-log ambiguity, advisory app certificates, Intel collateral downgrades, and NVIDIA raw-evidence verification.
-- The remaining fixture gap is a single repo-local Venice report that reaches `Verified` end-to-end.
+- Current tests cover schema failures, verdict construction, unsupported quote versions, explicit verify UI flow, raw-report-only verification behavior, certificate-anchor negatives, duplicate event-log ambiguity, consistency-authority labeling, advisory app certificates, Intel revocation-coverage reporting, Intel collateral downgrades, and NVIDIA raw-evidence verification.
+- A remaining fixture gap is a single repo-local Venice report assembled from official vendor artifacts that reaches `Fully verified` end-to-end without mocks.
 
 ### Build for production
 
@@ -154,7 +157,8 @@ Optional environment variables for the online path:
 - `VITE_INTEL_PCS_BASE_URL` to override the default Intel same-origin proxy route
 - `VITE_NVIDIA_NRAS_BASE_URL` to override the default NVIDIA same-origin proxy route
 - `VITE_NVIDIA_NRAS_JWKS_URL` to override the default NVIDIA JWKS proxy route
-- `VITE_NVIDIA_NRAS_API_KEY` to inject an NRAS API key at build/deploy time
+
+For NVIDIA NRAS authentication, the browser path is anonymous-first. The app tries NVIDIA verification without a key first and only reveals the BYOK field if NRAS responds with an authorization failure.
 
 ## Deployment Notes
 

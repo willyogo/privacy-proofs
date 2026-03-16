@@ -3,7 +3,7 @@ import {
   X509Certificate,
   X509Crl,
 } from "@peculiar/x509";
-import type { CheckResult } from "./check-result";
+import type { CheckAuthority, CheckResult } from "./check-result";
 import { validateCertificateChain } from "./certificates";
 import { utf8ToBytes, verifyEcdsaSignature } from "./crypto";
 import {
@@ -24,9 +24,16 @@ import type {
   IntelSignedQeIdentity,
   IntelSignedTcbInfo,
   OnlineVerificationOptions,
+  VerificationSummary,
 } from "./types";
 
-type OnlineVerificationResult = {
+type IntelOnlineVerificationResult = {
+  checks: CheckResult[];
+  revocationCoverage: VerificationSummary["intelRevocationCoverage"];
+  status: "partial" | "verified";
+};
+
+type NvidiaOnlineVerificationResult = {
   checks: CheckResult[];
   status: "partial" | "verified";
 };
@@ -54,7 +61,7 @@ export async function completeIntelOnlineVerification({
   quoteMrSignerSeam: string;
   quoteSeamAttributes: string;
   quoteTeeTcbSvn: number[];
-}): Promise<OnlineVerificationResult> {
+}): Promise<IntelOnlineVerificationResult> {
   const checks: CheckResult[] = [];
   const fetchImpl = resolveFetch(options?.fetchImpl);
 
@@ -73,7 +80,7 @@ export async function completeIntelOnlineVerification({
       }),
     );
 
-    return { checks, status: "partial" };
+    return { checks, revocationCoverage: "not-run", status: "partial" };
   }
 
   const caType = deriveIntelPckCaType(pckChain);
@@ -96,7 +103,7 @@ export async function completeIntelOnlineVerification({
       }),
     );
 
-    return { checks, status: "partial" };
+    return { checks, revocationCoverage: "not-run", status: "partial" };
   }
 
   const baseUrl = normalizeBaseUrl(
@@ -150,7 +157,7 @@ export async function completeIntelOnlineVerification({
   checks.push(...pckCrlResponse.checks);
 
   if (!qeIdentityResponse.ok || !tcbInfoResponse.ok || !pckCrlResponse.ok) {
-    return { checks, status: "partial" };
+    return { checks, revocationCoverage: "not-run", status: "partial" };
   }
 
   const qeIdentityChainResult = await validateCertificateChain({
@@ -188,7 +195,7 @@ export async function completeIntelOnlineVerification({
     hasFailedChecks(tcbInfoChainResult.checks) ||
     hasFailedChecks(pckCrlChainResult.checks)
   ) {
-    return { checks, status: "partial" };
+    return { checks, revocationCoverage: "not-run", status: "partial" };
   }
 
   const qeIdentitySignatureValid = await verifyIntelCollateralSignature({
@@ -251,9 +258,13 @@ export async function completeIntelOnlineVerification({
     !qeIdentitySignatureValid ||
     !tcbInfoSignatureValid ||
     !pckCrlVerification.complete ||
-    !signingChainRevocation.complete
+    hasBlockingFailures(signingChainRevocation.checks)
   ) {
-    return { checks, status: "partial" };
+    return {
+      checks,
+      revocationCoverage: signingChainRevocation.coverage,
+      status: "partial",
+    };
   }
 
   const qeIdentityEvaluation = evaluateQeIdentity({
@@ -347,6 +358,7 @@ export async function completeIntelOnlineVerification({
 
   return {
     checks,
+    revocationCoverage: signingChainRevocation.coverage,
     status: fullyVerified ? "verified" : "partial",
   };
 }
@@ -363,7 +375,7 @@ export async function completeNvidiaOnlineVerification({
   expectedNonce?: string;
   options?: OnlineVerificationOptions;
   payload: Record<string, unknown>;
-}): Promise<OnlineVerificationResult> {
+}): Promise<NvidiaOnlineVerificationResult> {
   const checks: CheckResult[] = [];
   const fetchImpl = resolveFetch(options?.fetchImpl);
 
@@ -1309,10 +1321,11 @@ async function evaluateIntelSigningChainRevocation({
   intelBaseUrl: string;
 }): Promise<{
   checks: CheckResult[];
-  complete: boolean;
+  coverage: Exclude<VerificationSummary["intelRevocationCoverage"], "not-run">;
 }> {
   const checks: CheckResult[] = [];
-  let complete = true;
+  let usableCoverageCount = 0;
+  let limitedCoverageReasons = 0;
 
   for (let index = 0; index < Math.max(0, certificates.length - 1); index += 1) {
     const certificate = certificates[index];
@@ -1337,6 +1350,7 @@ async function evaluateIntelSigningChainRevocation({
     );
 
     if (!issuer || crlUrls.length === 0) {
+      limitedCoverageReasons += 1;
       continue;
     }
 
@@ -1352,7 +1366,7 @@ async function evaluateIntelSigningChainRevocation({
     })));
 
     if (!crlFetchResult.ok) {
-      complete = false;
+      limitedCoverageReasons += 1;
       continue;
     }
 
@@ -1360,7 +1374,7 @@ async function evaluateIntelSigningChainRevocation({
     try {
       crl = parseIntelCrl(crlFetchResult.body);
     } catch (error) {
-      complete = false;
+      limitedCoverageReasons += 1;
       checks.push(
         buildCheck({
           description:
@@ -1428,9 +1442,11 @@ async function evaluateIntelSigningChainRevocation({
     );
 
     if (!signatureValid || !fresh) {
-      complete = false;
+      limitedCoverageReasons += 1;
       continue;
     }
+
+    usableCoverageCount += 1;
 
     const revoked = crl.findRevoked(certificate) !== null;
     checks.push(
@@ -1450,9 +1466,36 @@ async function evaluateIntelSigningChainRevocation({
     );
   }
 
+  const inspectedCertificates = Math.max(0, certificates.length - 1);
+  const coverage =
+    inspectedCertificates === 0 || usableCoverageCount === inspectedCertificates
+      ? "complete"
+      : "limited";
+
+  checks.push(
+    buildCheck({
+      description:
+        coverage === "complete"
+          ? "Intel signing-chain revocation coverage is complete for the issuer certificates returned with the fetched collateral."
+          : "Intel signing-chain revocation coverage is limited because one or more issuer certificates lacked usable CRL coverage.",
+      details: [
+        buildDetail("Issuer certificates inspected", inspectedCertificates),
+        buildDetail("Certificates with usable CRL coverage", usableCoverageCount),
+        buildDetail("Coverage limitations", limitedCoverageReasons),
+      ],
+      domain: "tdx",
+      id: "intel-online-signing-revocation-coverage",
+      jsonPath: "$.intel_quote",
+      label: "Assess Intel signing-chain revocation coverage",
+      severity: "advisory",
+      source: "online",
+      status: coverage === "complete" ? "pass" : "info",
+    }),
+  );
+
   return {
     checks,
-    complete,
+    coverage,
   };
 }
 
@@ -2203,8 +2246,27 @@ function hasBlockingFailures(checks: CheckResult[]): boolean {
   );
 }
 
-function buildCheck(check: CheckResult): CheckResult {
-  return check;
+type BuildCheckInput = Omit<CheckResult, "authority"> & {
+  authority?: CheckAuthority;
+};
+
+function buildCheck(check: BuildCheckInput): CheckResult {
+  return {
+    ...check,
+    authority: check.authority ?? inferAuthority(check.source),
+  };
+}
+
+function inferAuthority(source: CheckResult["source"]): CheckAuthority {
+  if (source === "online") {
+    return "vendor";
+  }
+
+  if (source === "embedded") {
+    return "provenance";
+  }
+
+  return "cryptographic";
 }
 
 function buildDetail(label: string, value: unknown) {

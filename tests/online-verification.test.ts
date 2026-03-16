@@ -89,11 +89,11 @@ describe("online verification", () => {
             );
           }
 
-          return new Response(new Uint8Array([0x30, 0x03, 0x02, 0x01, 0x00]), {
+          return new Response("missing", {
             headers: {
-              "content-type": "application/pkix-crl",
+              "content-type": "text/plain",
             },
-            status: 200,
+            status: 404,
           });
         },
         intelBaseUrl: "/intel-proxy",
@@ -107,10 +107,15 @@ describe("online verification", () => {
     });
 
     expect(result.status).toBe("partial");
+    expect(result.revocationCoverage).toBe("limited");
     expect(requestedUrls.length).toBeGreaterThanOrEqual(3);
     expect(
       requestedUrls.every((url) => url.startsWith("/intel-proxy?url=")),
     ).toBe(true);
+    expect(
+      result.checks.find((check) => check.id === "intel-online-signing-revocation-coverage")
+        ?.status,
+    ).toBe("info");
   });
 
   it("accepts nvapi keys without the Bearer prefix and verifies NRAS JWTs", async () => {

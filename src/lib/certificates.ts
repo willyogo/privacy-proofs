@@ -2,7 +2,12 @@ import {
   X509Certificate,
   X509ChainBuilder,
 } from "@peculiar/x509";
-import type { CheckResult, CheckSeverity, CheckSource } from "./check-result";
+import type {
+  CheckAuthority,
+  CheckResult,
+  CheckSeverity,
+  CheckSource,
+} from "./check-result";
 import { sha256Hex } from "./crypto";
 import {
   getPinnedRootFingerprints,
@@ -266,6 +271,25 @@ function certificateDomain(domain: TrustDomain): CheckResult["domain"] {
   return "nvidia";
 }
 
-function buildCheck(check: CheckResult): CheckResult {
-  return check;
+type BuildCheckInput = Omit<CheckResult, "authority"> & {
+  authority?: CheckAuthority;
+};
+
+function buildCheck(check: BuildCheckInput): CheckResult {
+  return {
+    ...check,
+    authority: check.authority ?? inferAuthority(check.source),
+  };
+}
+
+function inferAuthority(source: CheckResult["source"]): CheckAuthority {
+  if (source === "online") {
+    return "vendor";
+  }
+
+  if (source === "embedded") {
+    return "provenance";
+  }
+
+  return "cryptographic";
 }

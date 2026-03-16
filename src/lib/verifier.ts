@@ -1,6 +1,6 @@
 import type { X509Certificate } from "@peculiar/x509";
 import { bytesToHex, getAddress, hexToBytes, keccak256 } from "viem";
-import type { CheckDetail, CheckResult } from "./check-result";
+import type { CheckAuthority, CheckDetail, CheckResult } from "./check-result";
 import { parseDerAt } from "./asn1";
 import { validateCertificateChain } from "./certificates";
 import {
@@ -55,6 +55,7 @@ type VerificationAnalysis = {
     intel: EvidenceVerificationStatus;
     nvidia: EvidenceVerificationStatus;
   };
+  intelRevocationCoverage: "not-run" | "complete" | "limited";
   mode: VerificationMode;
   quoteReportData?: string;
   verifiedAt?: string;
@@ -62,6 +63,7 @@ type VerificationAnalysis = {
 
 type DomainVerificationResult = {
   checks: CheckResult[];
+  revocationCoverage?: VerificationAnalysis["intelRevocationCoverage"];
   status: EvidenceVerificationStatus;
 };
 
@@ -141,6 +143,7 @@ export async function verifyNormalizedReport(
 ): Promise<VerificationAnalysis> {
   const checks: CheckResult[] = [];
   let derivedSigningAddress: string | undefined;
+  let intelRevocationCoverage: VerificationAnalysis["intelRevocationCoverage"] = "not-run";
   let quoteReportData: string | undefined;
   let verifiedAt: string | undefined;
   const mode = options.mode ?? "offline";
@@ -400,6 +403,9 @@ export async function verifyNormalizedReport(
             });
       checks.push(...collateralResult.checks);
       evidenceStatus.intel = collateralResult.status;
+      if (collateralResult.revocationCoverage) {
+        intelRevocationCoverage = collateralResult.revocationCoverage;
+      }
     }
   } else {
     checks.push(
@@ -439,6 +445,7 @@ export async function verifyNormalizedReport(
 
   checks.push(...buildEventLogChecks({ quote, report }));
   checks.push(...buildKeyProviderChecks(report));
+  checks.push(...buildCrossDomainLimitationChecks({ noncePresent: Boolean(nonce) }));
 
   const serverClaims = evaluateEmbeddedClaims(report, derivedSigningAddress);
   checks.push(...serverClaims.checks);
@@ -449,6 +456,7 @@ export async function verifyNormalizedReport(
     cryptographicStatus: deriveOverallCryptographicStatus(evidenceStatus),
     derivedSigningAddress,
     evidenceStatus,
+    intelRevocationCoverage,
     mode,
     quoteReportData,
     verifiedAt,
@@ -546,32 +554,40 @@ function buildEventLogChecks({
       expectedValue: info?.app_id,
       id: "event-log-app-id",
       label: "Check event log app ID binding",
-      matchingDescription: "The event log app-id matches the info block.",
-      mismatchDescription: "The event log app-id does not match the info block.",
+      matchingDescription:
+        "The event log app-id matches the corresponding info-block field, but Venice does not define a canonical payload-to-digest mapping for quote authentication.",
+      mismatchDescription:
+        "The event log app-id does not match the corresponding info-block field.",
     }),
     buildHexEventBindingCheck({
       actualValues: eventMap["compose-hash"] ?? [],
       expectedValue: info?.compose_hash,
       id: "event-log-compose-hash",
       label: "Check event log compose hash binding",
-      matchingDescription: "The event log compose hash matches the info block.",
-      mismatchDescription: "The event log compose hash does not match the info block.",
+      matchingDescription:
+        "The event log compose hash matches the corresponding info-block field, but that payload match is a local consistency check rather than quote-authenticated evidence.",
+      mismatchDescription:
+        "The event log compose hash does not match the corresponding info-block field.",
     }),
     buildHexEventBindingCheck({
       actualValues: eventMap["instance-id"] ?? [],
       expectedValue: info?.instance_id,
       id: "event-log-instance-id",
       label: "Check event log instance ID binding",
-      matchingDescription: "The event log instance-id matches the info block.",
-      mismatchDescription: "The event log instance-id does not match the info block.",
+      matchingDescription:
+        "The event log instance-id matches the corresponding info-block field, but that payload match is not independently authenticated by the quote.",
+      mismatchDescription:
+        "The event log instance-id does not match the corresponding info-block field.",
     }),
     buildHexEventBindingCheck({
       actualValues: eventMap["os-image-hash"] ?? [],
       expectedValue: tcbInfo?.os_image_hash,
       id: "event-log-os-image-hash",
       label: "Check event log OS image hash binding",
-      matchingDescription: "The event log OS image hash matches the TCB info.",
-      mismatchDescription: "The event log OS image hash does not match the TCB info.",
+      matchingDescription:
+        "The event log OS image hash matches the corresponding TCB-info field, but that payload match is a local consistency check only.",
+      mismatchDescription:
+        "The event log OS image hash does not match the corresponding TCB-info field.",
     }),
     buildCheck({
       description:
@@ -600,13 +616,14 @@ function buildEventLogChecks({
       buildCheck({
         description:
           JSON.stringify(report.event_log) === JSON.stringify(tcbInfo.event_log)
-            ? "The top-level event log matches the copy embedded in the TCB info."
-            : "The top-level event log differs from the copy embedded in the TCB info.",
+            ? "The top-level event log matches the duplicate copy embedded in the TCB info."
+            : "The top-level event log differs from the duplicate copy embedded in the TCB info.",
+        authority: "consistency",
         domain: "event-log",
         id: "event-log-duplication",
         jsonPath: "$.info.tcb_info.event_log",
         label: "Check duplicated event log consistency",
-        severity: "blocking",
+        severity: "advisory",
         source: "local",
         status:
           JSON.stringify(report.event_log) === JSON.stringify(tcbInfo.event_log)
@@ -682,30 +699,31 @@ function buildKeyProviderChecks(report: NormalizedAttestationReport): CheckResul
   const checks: CheckResult[] = [];
 
   const infoKeyProvider = parseJsonObject(info?.key_provider_info);
-  const distinctKeyProviderPayloads = distinctNormalizedValues(eventMap["key-provider"] ?? []);
+  const keyProviderPayloads = normalizeDistinctValues(eventMap["key-provider"] ?? []);
   const eventKeyProvider =
-    distinctKeyProviderPayloads.length === 1
-      ? parseJsonObject(hexToUtf8(distinctKeyProviderPayloads[0]!))
+    keyProviderPayloads.distinctValues.length === 1 && keyProviderPayloads.invalidCount === 0
+      ? parseJsonObject(hexToUtf8(keyProviderPayloads.distinctValues[0]!))
       : undefined;
 
   checks.push(
     buildCheck({
       description:
-        distinctKeyProviderPayloads.length > 1
-          ? "The event log contains conflicting key-provider payloads."
+        hasConsistencyConflict(keyProviderPayloads, eventMap["key-provider"] ?? [])
+          ? "The event log contains conflicting or malformed key-provider payloads."
           : infoKeyProvider &&
             eventKeyProvider &&
             JSON.stringify(infoKeyProvider) === JSON.stringify(eventKeyProvider)
-          ? "The key provider metadata matches between the info block and event log."
+          ? "The key provider metadata matches between the info block and event log, but that agreement is a local consistency check rather than quote-authenticated evidence."
           : "The key provider metadata does not match between the info block and event log.",
+      authority: "consistency",
       domain: "event-log",
       id: "key-provider-binding",
       jsonPath: "$.info.key_provider_info",
       label: "Check key provider metadata binding",
-      severity: "blocking",
+      severity: "advisory",
       source: "local",
       status:
-        distinctKeyProviderPayloads.length > 1
+        hasConsistencyConflict(keyProviderPayloads, eventMap["key-provider"] ?? [])
           ? "fail"
           : infoKeyProvider &&
             eventKeyProvider &&
@@ -716,6 +734,28 @@ function buildKeyProviderChecks(report: NormalizedAttestationReport): CheckResul
   );
 
   return checks;
+}
+
+function buildCrossDomainLimitationChecks({
+  noncePresent,
+}: {
+  noncePresent: boolean;
+}): CheckResult[] {
+  return [
+    buildCheck({
+      authority: "consistency",
+      description: noncePresent
+        ? "The Venice report exposes a shared nonce across the Intel and NVIDIA evidence paths, but this verifier does not claim a stronger cross-domain cryptographic linkage from the raw report alone."
+        : "The Venice report does not expose enough cross-domain binding material for this verifier to claim a stronger Intel/NVIDIA cryptographic linkage.",
+      domain: "binding",
+      id: "cross-domain-linkage-scope",
+      jsonPath: "$",
+      label: "Scope Intel and NVIDIA cross-domain linkage",
+      severity: "advisory",
+      source: "local",
+      status: "info",
+    }),
+  ];
 }
 
 async function evaluateTdxCollateral({
@@ -1178,6 +1218,21 @@ async function verifyNvidiaEvidence({
       status: "unsupported",
     };
   }
+
+  checks.push(
+    buildCheck({
+      authority: "consistency",
+      description:
+        "Local NVIDIA validation proves raw-evidence integrity plus nonce and FWID binding only. GPU measurement acceptance remains vendor-backed through NRAS.",
+      domain: "nvidia",
+      id: "nvidia-local-validation-scope",
+      jsonPath: "$.nvidia_payload",
+      label: "Scope local NVIDIA validation",
+      severity: "advisory",
+      source: "local",
+      status: "info",
+    }),
+  );
 
   let everyEntryVerified = true;
   let anyEntryParsed = false;
@@ -1812,31 +1867,53 @@ function buildHexEventBindingCheck({
   matchingDescription: string;
   mismatchDescription: string;
 }): CheckResult {
-  const distinctActualValues = distinctNormalizedValues(actualValues);
+  const normalizedValues = normalizeDistinctValues(actualValues);
   const expected = normalizeHex(expectedValue);
-  const isAmbiguous = distinctActualValues.length > 1;
-  const actual = distinctActualValues.length === 1 ? distinctActualValues[0] : undefined;
+  const isAmbiguous = hasConsistencyConflict(normalizedValues, actualValues);
+  const actual =
+    normalizedValues.distinctValues.length === 1 && normalizedValues.invalidCount === 0
+      ? normalizedValues.distinctValues[0]
+      : undefined;
 
   return buildCheck({
     description: isAmbiguous
-      ? "The event log contains multiple conflicting payloads for this security-critical event."
+      ? "The event log contains conflicting or malformed payloads for this security-critical event."
       : actual && expected && actual === expected
         ? matchingDescription
         : mismatchDescription,
+    authority: "consistency",
     domain: "event-log",
     id,
     jsonPath: "$.event_log",
     label,
-    severity: "blocking",
+    severity: "advisory",
     source: "local",
     status: isAmbiguous ? "fail" : actual && expected && actual === expected ? "pass" : "fail",
   });
 }
 
-function distinctNormalizedValues(values: string[]): string[] {
-  return Array.from(
-    new Set(values.map((value) => normalizeHex(value)).filter((value): value is string => Boolean(value))),
-  );
+function normalizeDistinctValues(values: string[]): {
+  distinctValues: string[];
+  invalidCount: number;
+} {
+  const normalizedValues = values.map((value) => normalizeHex(value));
+  return {
+    distinctValues: Array.from(
+      new Set(normalizedValues.filter((value): value is string => Boolean(value))),
+    ),
+    invalidCount: normalizedValues.filter((value) => value === undefined).length,
+  };
+}
+
+function hasConsistencyConflict(
+  values: ReturnType<typeof normalizeDistinctValues>,
+  rawValues: string[],
+): boolean {
+  if (values.distinctValues.length > 1) {
+    return true;
+  }
+
+  return rawValues.length > 1 && values.invalidCount > 0;
 }
 
 function replayEventLogRtmrs(value: NormalizedAttestationReport["event_log"]): {
@@ -2104,7 +2181,12 @@ function hasFailures(checks: CheckResult[]): boolean {
   return checks.some((check) => check.status === "fail");
 }
 
+type BuildCheckInput = Omit<CheckResult, "authority"> & {
+  authority?: CheckAuthority;
+};
+
 function buildCheck({
+  authority,
   description,
   details,
   domain,
@@ -2114,8 +2196,9 @@ function buildCheck({
   severity,
   source,
   status,
-}: CheckResult): CheckResult {
+}: BuildCheckInput): CheckResult {
   return {
+    authority: authority ?? inferAuthority(source),
     description,
     details,
     domain,
@@ -2126,6 +2209,18 @@ function buildCheck({
     source,
     status,
   };
+}
+
+function inferAuthority(source: CheckResult["source"]): CheckAuthority {
+  if (source === "online") {
+    return "vendor";
+  }
+
+  if (source === "embedded") {
+    return "provenance";
+  }
+
+  return "cryptographic";
 }
 
 function buildDetail(

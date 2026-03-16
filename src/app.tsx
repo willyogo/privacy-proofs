@@ -16,6 +16,7 @@ export default function App() {
   const [rawInput, setRawInput] = useState("");
   const [fileName, setFileName] = useState<string | undefined>(undefined);
   const [nvidiaApiKey, setNvidiaApiKey] = useState("");
+  const [showNvidiaApiKeyInput, setShowNvidiaApiKeyInput] = useState(false);
   const [result, setResult] = useState<ParseResult>(createIdleParseResult());
   const [activeMode, setActiveMode] = useState<VerificationMode | null>(null);
   const [, startTransition] = useTransition();
@@ -27,6 +28,7 @@ export default function App() {
 
     if (nextValue.trim().length === 0) {
       setResult(createIdleParseResult());
+      setShowNvidiaApiKeyInput(false);
     }
   }
 
@@ -43,9 +45,7 @@ export default function App() {
               intelBaseUrl:
                 sanitizeEnvValue(runtimeEnv?.VITE_INTEL_PCS_BASE_URL) ??
                 INTEL_PROXY_ROUTE,
-              nvidiaApiKey:
-                sanitizeEnvValue(nvidiaApiKey) ??
-                sanitizeEnvValue(runtimeEnv?.VITE_NVIDIA_NRAS_API_KEY),
+              nvidiaApiKey: sanitizeEnvValue(nvidiaApiKey),
               nvidiaBaseUrl:
                 sanitizeEnvValue(runtimeEnv?.VITE_NVIDIA_NRAS_BASE_URL) ??
                 NVIDIA_PROXY_BASE_ROUTE,
@@ -62,6 +62,13 @@ export default function App() {
 
     startTransition(() => {
       setResult(nextResult);
+      if (
+        mode === "online" &&
+        sanitizeEnvValue(nvidiaApiKey) === undefined &&
+        requiresNvidiaApiKey(nextResult)
+      ) {
+        setShowNvidiaApiKeyInput(true);
+      }
     });
     setActiveMode(null);
   }
@@ -90,6 +97,9 @@ export default function App() {
           className="page-section-input"
           activeMode={activeMode}
           fileName={fileName}
+          showNvidiaApiKeyInput={
+            showNvidiaApiKeyInput || sanitizeEnvValue(nvidiaApiKey) !== undefined
+          }
           onInputChange={handleReportInputChange}
           onNvidiaApiKeyChange={setNvidiaApiKey}
           onVerifyOffline={() => void handleVerify("offline")}
@@ -140,4 +150,16 @@ export default function App() {
 
 function sanitizeEnvValue(value?: string): string | undefined {
   return value && value.trim().length > 0 ? value.trim() : undefined;
+}
+
+function requiresNvidiaApiKey(result: ParseResult): boolean {
+  return result.checks.some((check) => {
+    if (check.id !== "nvidia-online-attest-fetch" || check.status !== "fail") {
+      return false;
+    }
+
+    return check.details?.some(
+      (detail) => detail.label === "HTTP status" && (detail.value === "401" || detail.value === "403"),
+    ) ?? false;
+  });
 }
