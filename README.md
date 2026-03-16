@@ -71,7 +71,7 @@ This repository now performs a materially stronger local verification pass than 
 The main remaining limits are:
 
 - online completion requires outbound network access
-- NVIDIA NRAS may require a user-supplied API key in the browser
+- NVIDIA NRAS may require a user-supplied API key in the browser after an unauthorized anonymous attempt
 - separate Venice response-signature metadata is still out of scope for this verifier
 - the raw Venice format does not provide a stronger Intel/NVIDIA cryptographic linkage than the shared nonce
 - Intel signing-chain revocation coverage depends on the CRL URLs exposed by fetched Intel collateral; limited coverage is surfaced separately and does not by itself block `Fully verified`
@@ -158,7 +158,7 @@ Optional environment variables for the online path:
 - `VITE_NVIDIA_NRAS_BASE_URL` to override the default NVIDIA same-origin proxy route
 - `VITE_NVIDIA_NRAS_JWKS_URL` to override the default NVIDIA JWKS proxy route
 
-For NVIDIA NRAS authentication, the browser path is BYOK: users paste their own API key when they request full verification.
+For NVIDIA NRAS authentication, the browser path is anonymous-first. The app tries NVIDIA verification without a key first and only reveals the BYOK field if NRAS responds with an authorization failure.
 
 ## Deployment Notes
 

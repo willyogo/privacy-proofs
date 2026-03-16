@@ -11,6 +11,7 @@ type InputPanelProps = {
   onVerifyOffline: () => void;
   onVerifyOnline: () => void;
   rawInput: string;
+  showNvidiaApiKeyInput: boolean;
 };
 
 export default function InputPanel({
@@ -23,6 +24,7 @@ export default function InputPanel({
   onVerifyOffline,
   onVerifyOnline,
   rawInput,
+  showNvidiaApiKeyInput,
 }: InputPanelProps) {
   const isVerifying = activeMode !== null;
 
@@ -56,29 +58,33 @@ export default function InputPanel({
         value={rawInput}
       />
 
-      <label
-        className="textarea-label"
-        htmlFor="nvidia-api-key"
-      >
-        <a
-          href="https://build.nvidia.com/"
-          rel="noreferrer noopener"
-          target="_blank"
-        >
-          NVIDIA API key
-        </a>{" "}
-        (optional for local verification, required for live vendor verification)
-      </label>
-      <input
-        autoComplete="off"
-        className="text-input"
-        id="nvidia-api-key"
-        onChange={(event) => onNvidiaApiKeyChange(event.target.value)}
-        placeholder="Used only for live NVIDIA verification when your deployment does not inject auth"
-        spellCheck={false}
-        type="password"
-        value={nvidiaApiKey}
-      />
+      {showNvidiaApiKeyInput ? (
+        <>
+          <label
+            className="textarea-label"
+            htmlFor="nvidia-api-key"
+          >
+            <a
+              href="https://build.nvidia.com/"
+              rel="noreferrer noopener"
+              target="_blank"
+            >
+              NVIDIA API key
+            </a>{" "}
+            (shown because NRAS rejected the unauthenticated request)
+          </label>
+          <input
+            autoComplete="off"
+            className="text-input"
+            id="nvidia-api-key"
+            onChange={(event) => onNvidiaApiKeyChange(event.target.value)}
+            placeholder="Used only when live NVIDIA verification requires authentication"
+            spellCheck={false}
+            type="password"
+            value={nvidiaApiKey}
+          />
+        </>
+      ) : null}
 
       <div className="input-actions">
         <div className="input-actions-group">
@@ -109,7 +115,8 @@ export default function InputPanel({
         cryptography, NVIDIA evidence verification, and advisory inspection of
         embedded provenance. Full verification adds live Intel PCS collateral
         checks plus NVIDIA NRAS confirmation, using only the Venice report as
-        input.
+        input. The app tries NVIDIA online verification anonymously first and
+        only asks for an API key if NRAS returns unauthorized.
       </p>
     </section>
   );
